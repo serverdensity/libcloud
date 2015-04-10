@@ -20,6 +20,8 @@ import copy
 import binascii
 import time
 
+import xml.dom.minidom
+
 try:
     from lxml import etree as ET
 except ImportError:
@@ -46,9 +48,8 @@ from libcloud.utils.misc import lowercase_keys
 from libcloud.utils.compression import decompress_data
 from libcloud.common.types import LibcloudError, MalformedResponseError
 
+from libcloud.httplib_ssl import LibcloudHTTPConnection
 from libcloud.httplib_ssl import LibcloudHTTPSConnection
-
-LibcloudHTTPConnection = httplib.HTTPConnection
 
 
 class HTTPResponse(httplib.HTTPResponse):
@@ -267,7 +268,9 @@ class LoggingConnection():
 
     :cvar log: file-like object that logs entries are written to.
     """
+
     log = None
+    http_proxy_used = False
 
     def _log_response(self, r):
         rv = "# -------- begin %d:%d response ----------\n" % (id(self), id(r))
@@ -295,22 +298,41 @@ class LoggingConnection():
                 else:
                     cls = StringIO
 
-                return cls(b(self.s))
+                return cls(self.s)
         rr = r
         headers = lowercase_keys(dict(r.getheaders()))
 
         encoding = headers.get('content-encoding', None)
+        content_type = headers.get('content-type', None)
 
         if encoding in ['zlib', 'deflate']:
             body = decompress_data('zlib', body)
         elif encoding in ['gzip', 'x-gzip']:
             body = decompress_data('gzip', body)
 
+        pretty_print = os.environ.get('LIBCLOUD_DEBUG_PRETTY_PRINT_RESPONSE',
+                                      False)
+
         if r.chunked:
             ht += "%x\r\n" % (len(body))
-            ht += u(body)
+            ht += body.decode('utf-8')
             ht += "\r\n0\r\n"
         else:
+            if pretty_print and content_type == 'application/json':
+                try:
+                    body = json.loads(body.decode('utf-8'))
+                    body = json.dumps(body, sort_keys=True, indent=4)
+                except:
+                    # Invalid JSON or server is lying about content-type
+                    pass
+            elif pretty_print and content_type == 'text/xml':
+                try:
+                    elem = xml.dom.minidom.parseString(body.decode('utf-8'))
+                    body = elem.toprettyxml()
+                except Exception:
+                    # Invalid XML
+                    pass
+
             ht += u(body)
 
         if sys.version_info >= (2, 6) and sys.version_info < (2, 7):
@@ -329,12 +351,35 @@ class LoggingConnection():
         return (rr, rv)
 
     def _log_curl(self, method, url, body, headers):
-        cmd = ["curl", "-i"]
+        cmd = ["curl"]
 
-        cmd.extend(["-X", pquote(method)])
+        if self.http_proxy_used:
+            if self.proxy_username and self.proxy_password:
+                proxy_url = 'http://%s:%s@%s:%s' % (self.proxy_username,
+                                                    self.proxy_password,
+                                                    self.proxy_host,
+                                                    self.proxy_port)
+            else:
+                proxy_url = 'http://%s:%s' % (self.proxy_host,
+                                              self.proxy_port)
+            proxy_url = pquote(proxy_url)
+            cmd.extend(['--proxy', proxy_url])
+
+        cmd.extend(['-i'])
+
+        if method.lower() == 'head':
+            # HEAD method need special handling
+            cmd.extend(["--head"])
+        else:
+            cmd.extend(["-X", pquote(method)])
 
         for h in headers:
             cmd.extend(["-H", pquote("%s: %s" % (h, headers[h]))])
+
+        cert_file = getattr(self, 'cert_file', None)
+
+        if cert_file:
+            cmd.extend(["--cert", pquote(cert_file)])
 
         # TODO: in python 2.6, body can be a file-like object.
         if body is not None and len(body) > 0:
@@ -419,7 +464,7 @@ class Connection(object):
     allow_insecure = True
 
     def __init__(self, secure=True, host=None, port=None, url=None,
-                 timeout=None):
+                 timeout=None, proxy_url=None):
         self.secure = secure and 1 or 0
         self.ua = []
         self.context = {}
@@ -449,6 +494,20 @@ class Connection(object):
 
         if timeout:
             self.timeout = timeout
+
+        self.proxy_url = proxy_url
+
+    def set_http_proxy(self, proxy_url):
+        """
+        Set a HTTP proxy which will be used with this connection.
+
+        :param proxy_url: Proxy URL (e.g. http://<hostname>:<port> without
+                          authentication and
+                          http://<username>:<password>@<hostname>:<port> for
+                          basic auth authentication information.
+        :type proxy_url: ``str``
+        """
+        self.proxy_url = proxy_url
 
     def set_context(self, context):
         if not isinstance(context, dict):
@@ -485,7 +544,7 @@ class Connection(object):
 
         return (host, port, secure, request_path)
 
-    def connect(self, host=None, port=None, base_url=None):
+    def connect(self, host=None, port=None, base_url=None, **kwargs):
         """
         Establish a connection with the API server.
 
@@ -511,12 +570,27 @@ class Connection(object):
             host = host or self.host
             port = port or self.port
 
-        kwargs = {'host': host, 'port': int(port)}
+        if not hasattr(kwargs, 'host'):
+            kwargs.update({'host': host})
+
+        if not hasattr(kwargs, 'port'):
+            kwargs.update({'port': port})
+
+        if not hasattr(kwargs, 'key_file') and hasattr(self, 'key_file'):
+            kwargs.update({'key_file': self.key_file})
+
+        if not hasattr(kwargs, 'cert_file') and hasattr(self, 'cert_file'):
+            kwargs.update({'cert_file': self.cert_file})
+
+        #  kwargs = {'host': host, 'port': int(port)}
 
         # Timeout is only supported in Python 2.6 and later
         # http://docs.python.org/library/httplib.html#httplib.HTTPConnection
         if self.timeout and not PY25:
             kwargs.update({'timeout': self.timeout})
+
+        if self.proxy_url:
+            kwargs.update({'proxy_url': self.proxy_url})
 
         connection = self.conn_classes[secure](**kwargs)
         # You can uncoment this line, if you setup a reverse proxy server
@@ -544,7 +618,7 @@ class Connection(object):
         """
         Append a token to a user agent string.
 
-        Users of the library should call this to uniquely identify thier
+        Users of the library should call this to uniquely identify their
         requests to a provider.
 
         :type token: ``str``
@@ -795,7 +869,7 @@ class PollingConnection(Connection):
 
         :type context: ``dict``
         :param context: Context dictionary which is passed to the functions
-        which construct initial and poll URL.
+                        which construct initial and poll URL.
 
         :return: An :class:`Response` instance.
         :rtype: :class:`Response` instance
@@ -868,15 +942,33 @@ class ConnectionKey(Connection):
     Base connection class which accepts a single ``key`` argument.
     """
     def __init__(self, key, secure=True, host=None, port=None, url=None,
-                 timeout=None):
+                 timeout=None, proxy_url=None):
         """
         Initialize `user_id` and `key`; set `secure` to an ``int`` based on
         passed value.
         """
         super(ConnectionKey, self).__init__(secure=secure, host=host,
                                             port=port, url=url,
-                                            timeout=timeout)
+                                            timeout=timeout,
+                                            proxy_url=proxy_url)
         self.key = key
+
+
+class CertificateConnection(Connection):
+    """
+    Base connection class which accepts a single ``cert_file`` argument.
+    """
+    def __init__(self, cert_file, secure=True, host=None, port=None, url=None,
+                 timeout=None):
+        """
+        Initialize `cert_file`; set `secure` to an ``int`` based on
+        passed value.
+        """
+        super(CertificateConnection, self).__init__(secure=secure, host=host,
+                                                    port=port, url=url,
+                                                    timeout=timeout)
+
+        self.cert_file = cert_file
 
 
 class ConnectionUserAndKey(ConnectionKey):
@@ -886,11 +978,12 @@ class ConnectionUserAndKey(ConnectionKey):
 
     user_id = None
 
-    def __init__(self, user_id, key, secure=True,
-                 host=None, port=None, url=None, timeout=None):
+    def __init__(self, user_id, key, secure=True, host=None, port=None,
+                 url=None, timeout=None, proxy_url=None):
         super(ConnectionUserAndKey, self).__init__(key, secure=secure,
                                                    host=host, port=port,
-                                                   url=url, timeout=timeout)
+                                                   url=url, timeout=timeout,
+                                                   proxy_url=proxy_url)
         self.user_id = user_id
 
 

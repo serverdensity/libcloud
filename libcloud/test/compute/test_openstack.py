@@ -19,13 +19,14 @@ import os
 import sys
 import unittest
 import datetime
+from libcloud.utils.iso8601 import UTC
 
 try:
     import simplejson as json
 except ImportError:
     import json
 
-from mock import Mock
+from mock import Mock, patch
 
 from libcloud.utils.py3 import httplib
 from libcloud.utils.py3 import method_type
@@ -33,10 +34,7 @@ from libcloud.utils.py3 import u
 
 from libcloud.common.types import InvalidCredsError, MalformedResponseError, \
     LibcloudError
-from libcloud.common.openstack import OpenStackBaseConnection
-from libcloud.common.openstack import OpenStackAuthConnection
-from libcloud.common.openstack import AUTH_TOKEN_EXPIRES_GRACE_SECONDS
-from libcloud.compute.types import Provider, KeyPairDoesNotExistError
+from libcloud.compute.types import Provider, KeyPairDoesNotExistError, StorageVolumeState
 from libcloud.compute.providers import get_driver
 from libcloud.compute.drivers.openstack import (
     OpenStack_1_0_NodeDriver, OpenStack_1_0_Response,
@@ -85,215 +83,6 @@ class OpenStack_1_0_ResponseTestCase(unittest.TestCase):
             body, RESPONSE_BODY, "Non-XML body should be returned as is")
 
 
-class OpenStackServiceCatalogTests(unittest.TestCase):
-    # TODO refactor and move into libcloud/test/common
-
-    def setUp(self):
-        OpenStackBaseConnection.conn_classes = (OpenStackMockHttp,
-                                                OpenStackMockHttp)
-
-    def test_connection_get_service_catalog(self):
-        connection = OpenStackBaseConnection(*OPENSTACK_PARAMS)
-        connection.auth_url = "https://auth.api.example.com"
-        connection._ex_force_base_url = "https://www.foo.com"
-        connection.driver = OpenStack_1_0_NodeDriver(*OPENSTACK_PARAMS)
-
-        result = connection.get_service_catalog()
-        catalog = result.get_catalog()
-        endpoints = result.get_endpoints('cloudFilesCDN', 'cloudFilesCDN')
-        public_urls = result.get_public_urls('cloudFilesCDN', 'cloudFilesCDN')
-
-        expected_urls = [
-            'https://cdn2.clouddrive.com/v1/MossoCloudFS',
-            'https://cdn2.clouddrive.com/v1/MossoCloudFS'
-        ]
-
-        self.assertTrue('cloudFilesCDN' in catalog)
-        self.assertEqual(len(endpoints), 2)
-        self.assertEqual(public_urls, expected_urls)
-
-
-class OpenStackAuthConnectionTests(unittest.TestCase):
-    # TODO refactor and move into libcloud/test/common
-
-    def setUp(self):
-        OpenStackBaseConnection.auth_url = None
-        OpenStackBaseConnection.conn_classes = (OpenStackMockHttp,
-                                                OpenStackMockHttp)
-
-    def test_auth_url_is_correctly_assembled(self):
-        tuples = [
-            ('1.0', OpenStackMockHttp),
-            ('1.1', OpenStackMockHttp),
-            ('2.0', OpenStack_2_0_MockHttp),
-            ('2.0_apikey', OpenStack_2_0_MockHttp),
-            ('2.0_password', OpenStack_2_0_MockHttp)
-        ]
-
-        APPEND = 0
-        NOTAPPEND = 1
-
-        auth_urls = [
-            ('https://auth.api.example.com', APPEND, ''),
-            ('https://auth.api.example.com/', NOTAPPEND, '/'),
-            ('https://auth.api.example.com/foo/bar', NOTAPPEND, '/foo/bar'),
-            ('https://auth.api.example.com/foo/bar/', NOTAPPEND, '/foo/bar/')
-        ]
-
-        actions = {
-            '1.0': '/v1.0',
-            '1.1': '/v1.1/auth',
-            '2.0': '/v2.0/tokens',
-            '2.0_apikey': '/v2.0/tokens',
-            '2.0_password': '/v2.0/tokens'
-        }
-
-        user_id = OPENSTACK_PARAMS[0]
-        key = OPENSTACK_PARAMS[1]
-
-        for (auth_version, mock_http_class) in tuples:
-            for (url, should_append_default_path, expected_path) in auth_urls:
-                connection = \
-                    self._get_mock_connection(mock_http_class=mock_http_class,
-                                              auth_url=url)
-
-                auth_url = connection.auth_url
-
-                osa = OpenStackAuthConnection(connection,
-                                              auth_url,
-                                              auth_version,
-                                              user_id, key)
-
-                try:
-                    osa = osa.authenticate()
-                except:
-                    pass
-
-                if (should_append_default_path == APPEND):
-                    expected_path = actions[auth_version]
-
-                self.assertEqual(osa.action, expected_path)
-
-    def test_basic_authentication(self):
-        tuples = [
-            ('1.0', OpenStackMockHttp),
-            ('1.1', OpenStackMockHttp),
-            ('2.0', OpenStack_2_0_MockHttp),
-            ('2.0_apikey', OpenStack_2_0_MockHttp),
-            ('2.0_password', OpenStack_2_0_MockHttp)
-        ]
-
-        user_id = OPENSTACK_PARAMS[0]
-        key = OPENSTACK_PARAMS[1]
-
-        for (auth_version, mock_http_class) in tuples:
-            connection = \
-                self._get_mock_connection(mock_http_class=mock_http_class)
-            auth_url = connection.auth_url
-
-            osa = OpenStackAuthConnection(connection, auth_url, auth_version,
-                                          user_id, key)
-
-            self.assertEqual(osa.urls, {})
-            self.assertEqual(osa.auth_token, None)
-            self.assertEqual(osa.auth_user_info, None)
-            osa = osa.authenticate()
-
-            self.assertTrue(len(osa.urls) >= 1)
-            self.assertTrue(osa.auth_token is not None)
-
-            if auth_version in ['1.1', '2.0', '2.0_apikey', '2.0_password']:
-                self.assertTrue(osa.auth_token_expires is not None)
-
-            if auth_version in ['2.0', '2.0_apikey', '2.0_password']:
-                self.assertTrue(osa.auth_user_info is not None)
-
-    def test_token_expiration_and_force_reauthentication(self):
-        user_id = OPENSTACK_PARAMS[0]
-        key = OPENSTACK_PARAMS[1]
-
-        connection = self._get_mock_connection(OpenStack_2_0_MockHttp)
-        auth_url = connection.auth_url
-        auth_version = '2.0'
-
-        yesterday = datetime.datetime.today() - datetime.timedelta(1)
-        tomorrow = datetime.datetime.today() + datetime.timedelta(1)
-
-        osa = OpenStackAuthConnection(connection, auth_url, auth_version,
-                                      user_id, key)
-
-        mocked_auth_method = Mock(wraps=osa.authenticate_2_0_with_body)
-        osa.authenticate_2_0_with_body = mocked_auth_method
-
-        # Force re-auth, expired token
-        osa.auth_token = None
-        osa.auth_token_expires = yesterday
-        count = 5
-
-        for i in range(0, count):
-            osa.authenticate(force=True)
-
-        self.assertEqual(mocked_auth_method.call_count, count)
-
-        # No force reauth, expired token
-        osa.auth_token = None
-        osa.auth_token_expires = yesterday
-
-        mocked_auth_method.call_count = 0
-        self.assertEqual(mocked_auth_method.call_count, 0)
-
-        for i in range(0, count):
-            osa.authenticate(force=False)
-
-        self.assertEqual(mocked_auth_method.call_count, 1)
-
-        # No force reauth, valid / non-expired token
-        osa.auth_token = None
-
-        mocked_auth_method.call_count = 0
-        self.assertEqual(mocked_auth_method.call_count, 0)
-
-        for i in range(0, count):
-            osa.authenticate(force=False)
-
-            if i == 0:
-                osa.auth_token_expires = tomorrow
-
-        self.assertEqual(mocked_auth_method.call_count, 1)
-
-        # No force reauth, valid / non-expired token which is about to expire in
-        # less than AUTH_TOKEN_EXPIRES_GRACE_SECONDS
-        soon = datetime.datetime.utcnow() + \
-            datetime.timedelta(seconds=AUTH_TOKEN_EXPIRES_GRACE_SECONDS - 1)
-        osa.auth_token = None
-
-        mocked_auth_method.call_count = 0
-        self.assertEqual(mocked_auth_method.call_count, 0)
-
-        for i in range(0, count):
-            if i == 0:
-                osa.auth_token_expires = soon
-
-            osa.authenticate(force=False)
-
-        self.assertEqual(mocked_auth_method.call_count, 1)
-
-    def _get_mock_connection(self, mock_http_class, auth_url=None):
-        OpenStackBaseConnection.conn_classes = (mock_http_class,
-                                                mock_http_class)
-
-        if auth_url is None:
-            auth_url = "https://auth.api.example.com"
-
-        OpenStackBaseConnection.auth_url = auth_url
-        connection = OpenStackBaseConnection(*OPENSTACK_PARAMS)
-
-        connection._ex_force_base_url = "https://www.foo.com"
-        connection.driver = OpenStack_1_0_NodeDriver(*OPENSTACK_PARAMS)
-
-        return connection
-
-
 class OpenStack_1_0_Tests(unittest.TestCase, TestCaseMixin):
     should_list_locations = False
     should_list_volumes = False
@@ -328,7 +117,8 @@ class OpenStack_1_0_Tests(unittest.TestCase, TestCaseMixin):
         self.driver.connection._populate_hosts_and_request_paths()
         clear_pricing_data()
 
-    def test_populate_hosts_and_requests_path(self):
+    @patch('libcloud.common.openstack.OpenStackServiceCatalog')
+    def test_populate_hosts_and_requests_path(self, _):
         tomorrow = datetime.datetime.today() + datetime.timedelta(1)
         cls = self.driver_klass.connectionCls
 
@@ -336,7 +126,7 @@ class OpenStack_1_0_Tests(unittest.TestCase, TestCaseMixin):
 
         # Test authentication and token re-use
         con = cls('username', 'key')
-        osa = con._osa
+        osa = con.get_auth_class()
 
         mocked_auth_method = Mock()
         osa.authenticate = mocked_auth_method
@@ -357,7 +147,7 @@ class OpenStack_1_0_Tests(unittest.TestCase, TestCaseMixin):
         # ex_force_auth_token provided, authenticate should never be called
         con = cls('username', 'key', ex_force_base_url='http://ponies',
                   ex_force_auth_token='1234')
-        osa = con._osa
+        osa = con.get_auth_class()
 
         mocked_auth_method = Mock()
         osa.authenticate = mocked_auth_method
@@ -447,6 +237,7 @@ class OpenStack_1_0_Tests(unittest.TestCase, TestCaseMixin):
         self.assertEqual(node.extra.get('flavorId'), '1')
         self.assertEqual(node.extra.get('imageId'), '11')
         self.assertEqual(type(node.extra.get('metadata')), type(dict()))
+
         OpenStackMockHttp.type = 'METADATA'
         ret = self.driver.list_nodes()
         self.assertEqual(len(ret), 1)
@@ -537,17 +328,17 @@ class OpenStack_1_0_Tests(unittest.TestCase, TestCaseMixin):
         self.assertTrue("rate" in limits)
         self.assertTrue("absolute" in limits)
 
-    def test_ex_save_image(self):
+    def test_create_image(self):
         node = Node(id=444222, name=None, state=None, public_ips=None,
                     private_ips=None, driver=self.driver)
-        image = self.driver.ex_save_image(node, "imgtest")
+        image = self.driver.create_image(node, "imgtest")
         self.assertEqual(image.name, "imgtest")
         self.assertEqual(image.id, "12345")
 
-    def test_ex_delete_image(self):
+    def test_delete_image(self):
         image = NodeImage(id=333111, name='Ubuntu 8.10 (intrepid)',
                           driver=self.driver)
-        ret = self.driver.ex_delete_image(image)
+        ret = self.driver.delete_image(image)
         self.assertTrue(ret)
 
     def test_ex_list_ip_addresses(self):
@@ -827,7 +618,7 @@ class OpenStackMockHttp(MockHttpTestCase):
         return (httplib.OK, body, self.json_content_headers, httplib.responses[httplib.OK])
 
     def _v1_1_auth_INTERNAL_SERVER_ERROR(self, method, url, body, headers):
-        return (httplib.INTERNAL_SERVER_ERROR, "<h1>500: Internal Server Error</h1>",  {'content-type': 'text/html'},
+        return (httplib.INTERNAL_SERVER_ERROR, "<h1>500: Internal Server Error</h1>", {'content-type': 'text/html'},
                 httplib.responses[httplib.INTERNAL_SERVER_ERROR])
 
 
@@ -961,14 +752,24 @@ class OpenStack_1_1_Tests(unittest.TestCase, TestCaseMixin):
         node = nodes[0]
 
         self.assertEqual('12065', node.id)
+
         # test public IPv4
         self.assertTrue('12.16.18.28' in node.public_ips)
         self.assertTrue('50.57.94.35' in node.public_ips)
+
+        # floating ip
+        self.assertTrue('192.168.3.3' in node.public_ips)
+
         # test public IPv6
         self.assertTrue(
             '2001:4801:7808:52:16:3eff:fe47:788a' in node.public_ips)
+
         # test private IPv4
         self.assertTrue('10.182.64.34' in node.private_ips)
+
+        # floating ip
+        self.assertTrue('10.3.3.3' in node.private_ips)
+
         # test private IPv6
         self.assertTrue(
             'fec0:4801:7808:52:16:3eff:fe60:187d' in node.private_ips)
@@ -978,6 +779,15 @@ class OpenStack_1_1_Tests(unittest.TestCase, TestCaseMixin):
         self.assertEqual(node.extra.get('metadata'), {})
         self.assertEqual(node.extra['updated'], '2011-10-11T00:50:04Z')
         self.assertEqual(node.extra['created'], '2011-10-11T00:51:39Z')
+        self.assertEqual(node.extra.get('userId'), 'rs-reach')
+        self.assertEqual(node.extra.get('hostId'), '912566d83a13fbb357ea'
+                                                   '3f13c629363d9f7e1ba3f'
+                                                   '925b49f3d2ab725')
+        self.assertEqual(node.extra.get('disk_config'), 'AUTO')
+        self.assertEqual(node.extra.get('task_state'), 'spawning')
+        self.assertEqual(node.extra.get('vm_state'), 'active')
+        self.assertEqual(node.extra.get('power_state'), 1)
+        self.assertEqual(node.extra.get('progress'), 25)
 
     def test_list_nodes_no_image_id_attribute(self):
         # Regression test for LIBCLOD-455
@@ -994,19 +804,40 @@ class OpenStack_1_1_Tests(unittest.TestCase, TestCaseMixin):
 
         self.assertEqual('cd76a3a1-c4ce-40f6-9b9f-07a61508938d', volume.id)
         self.assertEqual('test_volume_2', volume.name)
+        self.assertEqual(StorageVolumeState.AVAILABLE, volume.state)
         self.assertEqual(2, volume.size)
+        self.assertEqual(volume.extra, {
+            'description': '',
+            'attachments': [{
+                'id': 'cd76a3a1-c4ce-40f6-9b9f-07a61508938d',
+                "device": "/dev/vdb",
+                "serverId": "12065",
+                "volumeId": "cd76a3a1-c4ce-40f6-9b9f-07a61508938d",
+            }],
+            'snapshot_id': None,
+            'state': 'available',
+            'location': 'nova',
+            'volume_type': 'None',
+            'metadata': {},
+            'created_at': '2013-06-24T11:20:13.000000',
+        })
 
-        self.assertEqual(volume.extra['description'], '')
-        self.assertEqual(volume.extra['attachments'][0][
-                         'id'], 'cd76a3a1-c4ce-40f6-9b9f-07a61508938d')
-
+        # also test that unknown state resolves to StorageVolumeState.UNKNOWN
         volume = volumes[1]
         self.assertEqual('cfcec3bc-b736-4db5-9535-4c24112691b5', volume.id)
         self.assertEqual('test_volume', volume.name)
         self.assertEqual(50, volume.size)
-
-        self.assertEqual(volume.extra['description'], 'some description')
-        self.assertEqual(volume.extra['attachments'], [])
+        self.assertEqual(StorageVolumeState.UNKNOWN, volume.state)
+        self.assertEqual(volume.extra, {
+            'description': 'some description',
+            'attachments': [],
+            'snapshot_id': '01f48111-7866-4cd2-986a-e92683c4a363',
+            'state': 'some-unknown-state',
+            'location': 'nova',
+            'volume_type': 'None',
+            'metadata': {},
+            'created_at': '2013-06-21T12:39:02.000000',
+        })
 
     def test_list_sizes(self):
         sizes = self.driver.list_sizes()
@@ -1015,6 +846,21 @@ class OpenStack_1_1_Tests(unittest.TestCase, TestCaseMixin):
         for size in sizes:
             self.assertTrue(isinstance(size.price, float),
                             'Wrong size price type')
+            self.assertTrue(isinstance(size.ram, int))
+            self.assertTrue(isinstance(size.vcpus, int))
+            self.assertTrue(isinstance(size.disk, int))
+            self.assertTrue(isinstance(size.swap, int))
+            self.assertTrue(isinstance(size.ephemeral_disk, int) or
+                            size.ephemeral_disk is None)
+            self.assertTrue(isinstance(size.extra, dict))
+            if size.id == '1':
+                self.assertEqual(size.ephemeral_disk, 40)
+                self.assertEqual(size.extra, {
+                    "policy_class": "standard_flavor",
+                    "class": "standard1",
+                    "disk_io_index": "2",
+                    "number_of_data_disks": "0"
+                })
 
         self.assertEqual(sizes[0].vcpus, 8)
 
@@ -1076,6 +922,19 @@ class OpenStack_1_1_Tests(unittest.TestCase, TestCaseMixin):
         self.assertEqual(node.extra['metadata']['My Server Name'], 'Apache1')
         self.assertEqual(node.extra['key_name'], 'devstack')
 
+    def test_create_node_with_availability_zone(self):
+        image = NodeImage(
+            id=11, name='Ubuntu 8.10 (intrepid)', driver=self.driver)
+        size = NodeSize(
+            1, '256 slice', None, None, None, None, driver=self.driver)
+        node = self.driver.create_node(name='racktest', image=image, size=size,
+                                       availability_zone='testaz')
+        self.assertEqual(node.id, '26f7fbee-8ce1-4c28-887a-bfe8e4bb10fe')
+        self.assertEqual(node.name, 'racktest')
+        self.assertEqual(node.extra['password'], 'racktestvJq7d3')
+        self.assertEqual(node.extra['metadata']['My Server Name'], 'Apache1')
+        self.assertEqual(node.extra['availability_zone'], 'testaz')
+
     def test_create_node_with_ex_disk_config(self):
         OpenStack_1_1_MockHttp.type = 'EX_DISK_CONFIG'
         image = NodeImage(
@@ -1088,6 +947,18 @@ class OpenStack_1_1_Tests(unittest.TestCase, TestCaseMixin):
         self.assertEqual(node.name, 'racktest')
         self.assertEqual(node.extra['disk_config'], 'AUTO')
 
+    def test_create_node_with_ex_config_drive(self):
+        OpenStack_1_1_MockHttp.type = 'EX_CONFIG_DRIVE'
+        image = NodeImage(
+            id=11, name='Ubuntu 8.10 (intrepid)', driver=self.driver)
+        size = NodeSize(
+            1, '256 slice', None, None, None, None, driver=self.driver)
+        node = self.driver.create_node(name='racktest', image=image, size=size,
+                                       ex_config_drive=True)
+        self.assertEqual(node.id, '26f7fbee-8ce1-4c28-887a-bfe8e4bb10fe')
+        self.assertEqual(node.name, 'racktest')
+        self.assertTrue(node.extra['config_drive'])
+
     def test_destroy_node(self):
         self.assertTrue(self.node.destroy())
 
@@ -1095,7 +966,9 @@ class OpenStack_1_1_Tests(unittest.TestCase, TestCaseMixin):
         self.assertTrue(self.node.reboot())
 
     def test_create_volume(self):
-        self.assertEqual(self.driver.create_volume(1, 'test'), True)
+        volume = self.driver.create_volume(1, 'test')
+        self.assertEqual(volume.name, 'test')
+        self.assertEqual(volume.size, 1)
 
     def test_destroy_volume(self):
         volume = self.driver.ex_get_volume(
@@ -1135,6 +1008,16 @@ class OpenStack_1_1_Tests(unittest.TestCase, TestCaseMixin):
                                          ex_disk_config='MANUAL')
         self.assertTrue(success)
 
+    def test_ex_rebuild_with_ex_config_drive(self):
+        image = NodeImage(id=58, name='Ubuntu 10.10 (intrepid)',
+                          driver=self.driver)
+        node = Node(id=12066, name=None, state=None, public_ips=None,
+                    private_ips=None, driver=self.driver)
+        success = self.driver.ex_rebuild(node, image=image,
+                                         ex_disk_config='MANUAL',
+                                         ex_config_drive=True)
+        self.assertTrue(success)
+
     def test_ex_resize(self):
         size = NodeSize(1, '256 slice', None, None, None, None,
                         driver=self.driver)
@@ -1158,8 +1041,8 @@ class OpenStack_1_1_Tests(unittest.TestCase, TestCaseMixin):
             e = sys.exc_info()[1]
             self.fail('An error was raised: ' + repr(e))
 
-    def test_ex_save_image(self):
-        image = self.driver.ex_save_image(self.node, 'new_image')
+    def test_create_image(self):
+        image = self.driver.create_image(self.node, 'new_image')
         self.assertEqual(image.name, 'new_image')
         self.assertEqual(image.id, '4949f9ee-2421-4c81-8b49-13119446008b')
 
@@ -1214,19 +1097,19 @@ class OpenStack_1_1_Tests(unittest.TestCase, TestCaseMixin):
         self.assertEqual(size.id, size_id)
         self.assertEqual(size.name, '15.5GB slice')
 
-    def test_ex_get_image(self):
+    def test_get_image(self):
         image_id = '13'
-        image = self.driver.ex_get_image(image_id)
+        image = self.driver.get_image(image_id)
         self.assertEqual(image.id, image_id)
         self.assertEqual(image.name, 'Windows 2008 SP2 x86 (B24)')
         self.assertEqual(image.extra['serverId'], None)
         self.assertEqual(image.extra['minDisk'], "5")
         self.assertEqual(image.extra['minRam'], "256")
 
-    def test_ex_delete_image(self):
+    def test_delete_image(self):
         image = NodeImage(
             id='26365521-8c62-11f9-2c33-283d153ecc3a', name='My Backup', driver=self.driver)
-        result = self.driver.ex_delete_image(image)
+        result = self.driver.delete_image(image)
         self.assertTrue(result)
 
     def test_extract_image_id_from_url(self):
@@ -1543,8 +1426,37 @@ class OpenStack_1_1_Tests(unittest.TestCase, TestCaseMixin):
             self.conn_classes[1].type = 'RACKSPACE'
 
         snapshots = self.driver.ex_list_snapshots()
-        self.assertEqual(len(snapshots), 2)
+        self.assertEqual(len(snapshots), 3)
+        self.assertEqual(snapshots[0].created, datetime.datetime(2012, 2, 29, 3, 50, 7, tzinfo=UTC))
+        self.assertEqual(snapshots[0].extra['created'], "2012-02-29T03:50:07Z")
         self.assertEqual(snapshots[0].extra['name'], 'snap-001')
+
+        # invalid date is parsed as None
+        assert snapshots[2].created is None
+
+    def test_list_volume_snapshots(self):
+        volume = self.driver.list_volumes()[0]
+
+        # rackspace needs a different mocked response for snapshots, but not for volumes
+        if self.driver_type.type == 'rackspace':
+            self.conn_classes[0].type = 'RACKSPACE'
+            self.conn_classes[1].type = 'RACKSPACE'
+
+        snapshots = self.driver.list_volume_snapshots(volume)
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0].id, '4fbbdccf-e058-6502-8844-6feeffdf4cb5')
+
+    def test_create_volume_snapshot(self):
+        volume = self.driver.list_volumes()[0]
+        if self.driver_type.type == 'rackspace':
+            self.conn_classes[0].type = 'RACKSPACE'
+            self.conn_classes[1].type = 'RACKSPACE'
+
+        ret = self.driver.create_volume_snapshot(volume,
+                                                 'Test Volume',
+                                                 ex_description='This is a test',
+                                                 ex_force=True)
+        self.assertEqual(ret.id, '3fbbcccf-d058-4502-8844-6feeffdf4cb5')
 
     def test_ex_create_snapshot(self):
         volume = self.driver.list_volumes()[0]
@@ -1554,8 +1466,18 @@ class OpenStack_1_1_Tests(unittest.TestCase, TestCaseMixin):
 
         ret = self.driver.ex_create_snapshot(volume,
                                              'Test Volume',
-                                             'This is a test')
+                                             description='This is a test',
+                                             force=True)
         self.assertEqual(ret.id, '3fbbcccf-d058-4502-8844-6feeffdf4cb5')
+
+    def test_destroy_volume_snapshot(self):
+        if self.driver_type.type == 'rackspace':
+            self.conn_classes[0].type = 'RACKSPACE'
+            self.conn_classes[1].type = 'RACKSPACE'
+
+        snapshot = self.driver.ex_list_snapshots()[0]
+        ret = self.driver.destroy_volume_snapshot(snapshot)
+        self.assertTrue(ret)
 
     def test_ex_delete_snapshot(self):
         if self.driver_type.type == 'rackspace':

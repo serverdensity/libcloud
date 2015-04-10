@@ -14,7 +14,7 @@
 # limitations under the License.
 
 # Libcloud Python 2.x and 3.x compatibility layer
-# Some methods bellow are taken from Django PYK3 port which is licensed under 3
+# Some methods below are taken from Django PYK3 port which is licensed under 3
 # clause BSD license
 # https://bitbucket.org/loewis/django-3k
 
@@ -28,8 +28,17 @@ try:
 except ImportError:
     from xml.etree import ElementTree as ET
 
+PY2 = sys.version_info[0] == 2
+PY3 = sys.version_info[0] == 3
+PY2_pre_25 = PY2 and sys.version_info < (2, 5)
+PY2_pre_26 = PY2 and sys.version_info < (2, 6)
+PY2_pre_27 = PY2 and sys.version_info < (2, 7)
+PY2_pre_279 = PY2 and sys.version_info < (2, 7, 9)
+PY3_pre_32 = PY3 and sys.version_info < (3, 2)
+
 PY2 = False
 PY25 = False
+PY26 = False
 PY27 = False
 PY3 = False
 PY32 = False
@@ -37,10 +46,13 @@ PY32 = False
 if sys.version_info >= (2, 0) and sys.version_info < (3, 0):
     PY2 = True
 
-if sys.version_info >= (2, 5) and sys.version_info <= (2, 6):
+if sys.version_info >= (2, 5) and sys.version_info < (2, 6):
     PY25 = True
 
-if sys.version_info >= (2, 7) and sys.version_info <= (2, 8):
+if sys.version_info >= (2, 6) and sys.version_info < (2, 7):
+    PY26 = True
+
+if sys.version_info >= (2, 7) and sys.version_info < (2, 8):
     PY27 = True
 
 if sys.version_info >= (3, 0):
@@ -49,11 +61,18 @@ if sys.version_info >= (3, 0):
 if sys.version_info >= (3, 2) and sys.version_info < (3, 3):
     PY32 = True
 
+if PY2_pre_279 or PY3_pre_32:
+    from backports.ssl_match_hostname import match_hostname, CertificateError  # NOQA
+else:
+    # ssl module in Python >= 3.2 includes match hostname function
+    from ssl import match_hostname, CertificateError  # NOQA
+
 if PY3:
     import http.client as httplib
     from io import StringIO
     import urllib
     import urllib as urllib2
+    # pylint: disable=no-name-in-module
     import urllib.parse as urlparse
     import xmlrpc.client as xmlrpclib
 
@@ -80,19 +99,40 @@ if PY3:
             return s.encode('utf-8')
         elif isinstance(s, bytes):
             return s
+        elif isinstance(s, int):
+            return bytes([s])
         else:
             raise TypeError("Invalid argument %r for b()" % (s,))
+
+    def ensure_string(s):
+        if isinstance(s, str):
+            return s
+        elif isinstance(s, bytes):
+            return s.decode('utf-8')
+        else:
+            raise TypeError("Invalid argument %r for ensure_string()" % (s,))
 
     def byte(n):
         # assume n is a Latin-1 string of length 1
         return ord(n)
+
+    _real_unicode = str
     u = str
+
+    def bchr(s):
+        """Take an integer and make a 1-character byte string."""
+        return bytes([s])
 
     def dictvalues(d):
         return list(d.values())
 
     def tostring(node):
         return ET.tostring(node, encoding='unicode')
+
+    def hexadigits(s):
+        # s needs to be a byte string.
+        return [format(x, "x") for x in s]
+
 else:
     import httplib  # NOQA
     from StringIO import StringIO  # NOQA
@@ -125,12 +165,16 @@ else:
 
     method_type = types.MethodType
 
-    b = bytes = str
+    b = bytes = ensure_string = str
 
     def byte(n):
         return n
 
     u = unicode
+
+    def bchr(s):
+        """Take an integer and make a 1-character byte string."""
+        return chr(s)
 
     def next(i):
         return i.next()
@@ -146,11 +190,16 @@ else:
             s = s.encode('utf8')
         return _urlquote(s, safe)
 
+    def hexadigits(s):
+        # s needs to be a string.
+        return [x.encode("hex") for x in s]
+
 if PY25:
     import posixpath
 
     # Taken from http://jimmyg.org/work/code/barenecessities/index.html
     # (MIT license)
+    # pylint: disable=function-redefined
     def relpath(path, start=posixpath.curdir):   # NOQA
         """Return a relative version of a path"""
         if not path:

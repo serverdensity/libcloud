@@ -43,16 +43,9 @@ class RimuHostingException(Exception):
 
 
 class RimuHostingResponse(JsonResponse):
-    def __init__(self, response, connection):
-        self.body = response.read()
-        self.status = response.status
-        self.headers = dict(response.getheaders())
-        self.error = response.reason
-        self.connection = connection
-
-        if self.success():
-            self.object = self.parse_body()
-
+    """
+    Response Class for RimuHosting driver
+    """
     def success(self):
         if self.status == 403:
             raise InvalidCredsError()
@@ -158,8 +151,8 @@ class RimuHostingNodeDriver(NodeDriver):
                  name=order['domain_name'],
                  state=NodeState.RUNNING,
                  public_ips=(
-                     [order['allocated_ips']['primary_ip']]
-                     + order['allocated_ips']['secondary_ips']),
+                     [order['allocated_ips']['primary_ip']] +
+                     order['allocated_ips']['secondary_ips']),
                  private_ips=[],
                  driver=self.connection.driver,
                  extra={
@@ -274,9 +267,11 @@ class RimuHostingNodeDriver(NodeDriver):
 
         data = {
             'instantiation_options': {
-                'domain_name': name, 'distro': image.id
+                'domain_name': name,
+                'distro': image.id
             },
             'pricing_plan_code': size.id,
+            'vps_parameters': {}
         }
 
         if 'ex_control_panel' in kwargs:
@@ -309,21 +304,19 @@ class RimuHostingNodeDriver(NodeDriver):
                     kwargs['ex_extra_ip_reason']
 
         if 'ex_memory_mb' in kwargs:
-            if 'vps_parameters' not in data:
-                data['vps_parameters'] = {}
             data['vps_parameters']['memory_mb'] = kwargs['ex_memory_mb']
 
         if 'ex_disk_space_mb' in kwargs:
-            if 'ex_vps_parameters' not in data:
-                data['vps_parameters'] = {}
             data['vps_parameters']['disk_space_mb'] = \
                 kwargs['ex_disk_space_mb']
 
         if 'ex_disk_space_2_mb' in kwargs:
-            if 'vps_parameters' not in data:
-                data['vps_parameters'] = {}
             data['vps_parameters']['disk_space_2_mb'] =\
                 kwargs['ex_disk_space_2_mb']
+
+        # Don't send empty 'vps_parameters' attribute
+        if not data['vps_parameters']:
+            del data['vps_parameters']
 
         res = self.connection.request(
             '/orders/new-vps',

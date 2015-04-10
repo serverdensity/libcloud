@@ -24,21 +24,32 @@ import time
 import hashlib
 import os
 import socket
+import random
 import binascii
 
 from libcloud.utils.py3 import b
 
 import libcloud.compute.ssh
 from libcloud.pricing import get_size_price
-from libcloud.compute.types import NodeState, DeploymentError
+from libcloud.compute.types import NodeState, StorageVolumeState,\
+    DeploymentError
 from libcloud.compute.ssh import SSHClient
 from libcloud.common.base import ConnectionKey
 from libcloud.common.base import BaseDriver
 from libcloud.common.types import LibcloudError
+from libcloud.compute.ssh import have_paramiko
 
 from libcloud.utils.networking import is_private_subnet
 from libcloud.utils.networking import is_valid_ip_address
 
+if have_paramiko:
+    from paramiko.ssh_exception import SSHException
+    from paramiko.ssh_exception import AuthenticationException
+
+    SSH_TIMEOUT_EXCEPTION_CLASSES = (AuthenticationException, SSHException,
+                                     IOError, socket.gaierror, socket.error)
+else:
+    SSH_TIMEOUT_EXCEPTION_CLASSES = (IOError, socket.gaierror, socket.error)
 
 # How long to wait for the node to come online after creating it
 NODE_ONLINE_WAIT_TIMEOUT = 10 * 60
@@ -59,6 +70,7 @@ __all__ = [
     'NodeDriver',
 
     'StorageVolume',
+    'StorageVolumeState',
     'VolumeSnapshot',
 
     # Deprecated, moved to libcloud.utils.networking
@@ -135,7 +147,7 @@ class Node(UuidMixin):
     >>> node.name
     'dummy-1'
 
-    the node keeps a reference to its own driver which means that we
+    The node keeps a reference to its own driver which means that we
     can work on nodes from different providers without having to know
     which is which.
 
@@ -146,7 +158,7 @@ class Node(UuidMixin):
     >>> node2.driver.creds
     72
 
-    Althrough Node objects can be subclassed, this isn't normally
+    Although Node objects can be subclassed, this isn't normally
     done.  Instead, any driver specific information is stored in the
     "extra" attribute of the node.
 
@@ -242,9 +254,11 @@ class Node(UuidMixin):
         return self.driver.destroy_node(self)
 
     def __repr__(self):
+        state = NodeState.tostring(self.state)
+
         return (('<Node: uuid=%s, name=%s, state=%s, public_ips=%s, '
                  'private_ips=%s, provider=%s ...>')
-                % (self.uuid, self.name, self.state, self.public_ips,
+                % (self.uuid, self.name, state, self.public_ips,
                    self.private_ips, self.driver.name))
 
 
@@ -449,7 +463,8 @@ class StorageVolume(UuidMixin):
     A base StorageVolume class to derive from.
     """
 
-    def __init__(self, id, name, size, driver, extra=None):
+    def __init__(self, id, name, size, driver,
+                 state=None, extra=None):
         """
         :param id: Storage volume ID.
         :type id: ``str``
@@ -463,6 +478,10 @@ class StorageVolume(UuidMixin):
         :param driver: Driver this image belongs to.
         :type driver: :class:`.NodeDriver`
 
+        :param state: Optional state of the StorageVolume. If not
+                      provided, will default to UNKNOWN.
+        :type state: :class:`.StorageVolumeState`
+
         :param extra: Optional provider specific attributes.
         :type extra: ``dict``
         """
@@ -471,6 +490,7 @@ class StorageVolume(UuidMixin):
         self.size = size
         self.driver = driver
         self.extra = extra
+        self.state = state
         UuidMixin.__init__(self)
 
     def list_snapshots(self):
@@ -534,23 +554,32 @@ class VolumeSnapshot(object):
     """
     A base VolumeSnapshot class to derive from.
     """
-    def __init__(self, id, driver, size=None, extra=None):
+    def __init__(self, id, driver, size=None, extra=None, created=None):
         """
         VolumeSnapshot constructor.
 
         :param      id: Snapshot ID.
         :type       id: ``str``
 
+        :param      driver: The driver that represents a connection to the
+                            provider
+        :type       driver: `NodeDriver`
+
         :param      size: A snapshot size in GB.
         :type       size: ``int``
 
         :param      extra: Provider depends parameters for snapshot.
         :type       extra: ``dict``
+
+        :param      created: A datetime object that represents when the
+                             snapshot was created
+        :type       created: ``datetime.datetime``
         """
         self.id = id
         self.driver = driver
         self.size = size
         self.extra = extra or {}
+        self.created = created
 
     def destroy(self):
         """
@@ -559,6 +588,10 @@ class VolumeSnapshot(object):
         :rtype: ``bool``
         """
         return self.driver.destroy_volume_snapshot(snapshot=self)
+
+    def __repr__(self):
+        return ('<VolumeSnapshot id=%s size=%s driver=%s>' %
+                (self.id, self.size, self.driver.name))
 
 
 class KeyPair(object):
@@ -644,19 +677,6 @@ class NodeDriver(BaseDriver):
         """
         raise NotImplementedError(
             'list_nodes not implemented for this driver')
-
-    def list_images(self, location=None):
-        """
-        List images on a provider
-
-        :param location: The location at which to list images
-        :type location: :class:`.NodeLocation`
-
-        :return: list of node image objects
-        :rtype: ``list`` of :class:`.NodeImage`
-        """
-        raise NotImplementedError(
-            'list_images not implemented for this driver')
 
     def list_sizes(self, location=None):
         """
@@ -751,7 +771,7 @@ class NodeDriver(BaseDriver):
         :type image:  :class:`.NodeImage`
 
         :param location: Which data center to create a node in. If empty,
-                              undefined behavoir will be selected. (optional)
+                              undefined behavior will be selected. (optional)
         :type location: :class:`.NodeLocation`
 
         :param auth:   Initial authentication information for the node
@@ -810,7 +830,7 @@ class NodeDriver(BaseDriver):
         existing implementation should be able to handle most such.
 
         :param deploy: Deployment to run once machine is online and
-                            availble to SSH.
+                            available to SSH.
         :type deploy: :class:`Deployment`
 
         :param ssh_username: Optional name of the account which is used
@@ -919,7 +939,7 @@ class NodeDriver(BaseDriver):
                 e = sys.exc_info()[1]
                 deploy_error = e
             else:
-                # Script sucesfully executed, don't try alternate username
+                # Script successfully executed, don't try alternate username
                 deploy_error = None
                 break
 
@@ -991,13 +1011,13 @@ class NodeDriver(BaseDriver):
         :type name: ``str``
 
         :param location: Which data center to create a volume in. If
-                               empty, undefined behavoir will be selected.
+                               empty, undefined behavior will be selected.
                                (optional)
         :type location: :class:`.NodeLocation`
 
-        :param snapshot:  Name of snapshot from which to create the new
-                               volume.  (optional)
-        :type snapshot:  ``str``
+        :param snapshot:  Snapshot from which to create the new
+                          volume.  (optional)
+        :type snapshot: :class:`.VolumeSnapshot`
 
         :return: The newly created volume.
         :rtype: :class:`StorageVolume`
@@ -1005,9 +1025,15 @@ class NodeDriver(BaseDriver):
         raise NotImplementedError(
             'create_volume not implemented for this driver')
 
-    def create_volume_snapshot(self, volume, name):
+    def create_volume_snapshot(self, volume, name=None):
         """
         Creates a snapshot of the storage volume.
+
+        :param volume: The StorageVolume to create a VolumeSnapshot from
+        :type volume: :class:`.VolumeSnapshot`
+
+        :param name: Name of created snapshot (optional)
+        :type name: `str`
 
         :rtype: :class:`VolumeSnapshot`
         """
@@ -1060,10 +1086,99 @@ class NodeDriver(BaseDriver):
         """
         Destroys a snapshot.
 
+        :param snapshot: The snapshot to delete
+        :type snapshot: :class:`VolumeSnapshot`
+
         :rtype: :class:`bool`
         """
         raise NotImplementedError(
             'destroy_volume_snapshot not implemented for this driver')
+
+    ##
+    # Image management methods
+    ##
+
+    def list_images(self, location=None):
+        """
+        List images on a provider.
+
+        :param location: The location at which to list images.
+        :type location: :class:`.NodeLocation`
+
+        :return: list of node image objects.
+        :rtype: ``list`` of :class:`.NodeImage`
+        """
+        raise NotImplementedError(
+            'list_images not implemented for this driver')
+
+    def create_image(self, node, name, description=None):
+        """
+        Creates an image from a node object.
+
+        :param node: Node to run the task on.
+        :type node: :class:`.Node`
+
+        :param name: name for new image.
+        :type name: ``str``
+
+        :param description: description for new image.
+        :type name: ``description``
+
+        :rtype: :class:`.NodeImage`:
+        :return: NodeImage instance on success.
+
+        """
+        raise NotImplementedError(
+            'create_image not implemented for this driver')
+
+    def delete_image(self, node_image):
+        """
+        Deletes a node image from a provider.
+
+        :param node_image: Node image object.
+        :type node_image: :class:`.NodeImage`
+
+        :return: ``True`` if delete_image was successful, ``False`` otherwise.
+        :rtype: ``bool``
+        """
+
+        raise NotImplementedError(
+            'delete_image not implemented for this driver')
+
+    def get_image(self, image_id):
+        """
+        Returns a single node image from a provider.
+
+        :param image_id: Node to run the task on.
+        :type image_id: ``str``
+
+        :rtype :class:`.NodeImage`:
+        :return: NodeImage instance on success.
+        """
+        raise NotImplementedError(
+            'get_image not implemented for this driver')
+
+    def copy_image(self, source_region, node_image, name, description=None):
+        """
+        Copies an image from a source region to the current region.
+
+        :param source_region: Region to copy the node from.
+        :type source_region: ``str``
+
+        :param node_image: NodeImage to copy.
+        :type node_image: :class:`.NodeImage`:
+
+        :param name: name for new image.
+        :type name: ``str``
+
+        :param description: description for new image.
+        :type name: ``str``
+
+        :rtype: :class:`.NodeImage`:
+        :return: NodeImage instance on success.
+        """
+        raise NotImplementedError(
+            'copy_image not implemented for this driver')
 
     ##
     # SSH key pair management methods
@@ -1140,7 +1255,7 @@ class NodeDriver(BaseDriver):
         Delete an existing key pair.
 
         :param key_pair: Key pair object.
-        :type key_pair: :class`.KeyPair`
+        :type key_pair: :class:`.KeyPair`
         """
         raise NotImplementedError(
             'delete_key_pair not implemented for this driver')
@@ -1255,7 +1370,18 @@ class NodeDriver(BaseDriver):
         if 'password' in self.features['create_node']:
             value = os.urandom(16)
             value = binascii.hexlify(value).decode('ascii')
-            return NodeAuthPassword(value, generated=True)
+
+            # Some providers require password to also include uppercase
+            # characters so convert some characters to uppercase
+            password = ''
+            for char in value:
+                if not char.isdigit() and char.islower():
+                    if random.randint(0, 1) == 1:
+                        char = char.upper()
+
+                password += char
+
+            return NodeAuthPassword(password, generated=True)
 
         if auth:
             raise LibcloudError(
@@ -1295,9 +1421,17 @@ class NodeDriver(BaseDriver):
         while time.time() < end:
             try:
                 ssh_client.connect()
-            except (IOError, socket.gaierror, socket.error):
-                # Retry if a connection is refused or timeout
-                # occurred
+            except SSH_TIMEOUT_EXCEPTION_CLASSES:
+                e = sys.exc_info()[1]
+                message = str(e).lower()
+                expected_msg = 'no such file or directory'
+
+                if isinstance(e, IOError) and expected_msg in message:
+                    # Propagate (key) file doesn't exist errors
+                    raise e
+
+                # Retry if a connection is refused, timeout occurred,
+                # or the connection fails due to failed authentication.
                 ssh_client.close()
                 time.sleep(wait_period)
                 continue
@@ -1321,10 +1455,9 @@ class NodeDriver(BaseDriver):
         ssh_client = SSHClient(hostname=ssh_hostname,
                                port=ssh_port, username=ssh_username,
                                password=ssh_password,
-                               key=ssh_key_file,
+                               key_files=ssh_key_file,
                                timeout=ssh_timeout)
 
-        # Connect to the SSH server running on the node
         ssh_client = self._ssh_client_connect(ssh_client=ssh_client,
                                               timeout=timeout)
 

@@ -24,8 +24,17 @@ Usage:
 """
 
 import os
+import ssl
+
+__all__ = [
+    'VERIFY_SSL_CERT',
+    'SSL_VERSION',
+    'CA_CERTS_PATH'
+]
 
 VERIFY_SSL_CERT = True
+
+SSL_VERSION = ssl.PROTOCOL_TLSv1
 
 # File containing one or more PEM-encoded CA certificates
 # concatenated together.
@@ -42,7 +51,10 @@ CA_CERTS_PATH = [
     # macports: curl-ca-bundle
     '/opt/local/share/curl/curl-ca-bundle.crt',
 
-    # homebrew: curl-ca-bundle
+    # homebrew: openssl
+    '/usr/local/etc/openssl/cert.pem',
+
+    # homebrew: curl-ca-bundle (backward compatibility)
     '/usr/local/opt/curl-ca-bundle/share/ca-bundle.crt',
 ]
 

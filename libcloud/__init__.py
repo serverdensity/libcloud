@@ -20,9 +20,10 @@ libcloud provides a unified interface to the cloud computing resources.
 """
 
 __all__ = ['__version__', 'enable_debug']
-__version__ = '0.14.1'
+__version__ = '0.17.1-dev'
 
 import os
+import codecs
 
 try:
     import paramiko
@@ -51,12 +52,12 @@ def _init_once():
     """
     Utility function that is ran once on Library import.
 
-    This checks for the LIBCLOUD_DEBUG enviroment variable, which if it exists
+    This checks for the LIBCLOUD_DEBUG environment variable, which if it exists
     is where we will log debug information about the provider transports.
     """
     path = os.getenv('LIBCLOUD_DEBUG')
     if path:
-        fo = open(path, 'a')
+        fo = codecs.open(path, 'a', encoding='utf8')
         enable_debug(fo)
 
         if have_paramiko:

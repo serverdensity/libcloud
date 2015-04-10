@@ -26,9 +26,11 @@ except ImportError:
     import json
 
 from libcloud.common.types import ProviderError
-from libcloud.compute.drivers.cloudstack import CloudStackNodeDriver
+from libcloud.compute.drivers.cloudstack import CloudStackNodeDriver, \
+    CloudStackAffinityGroupType
 from libcloud.compute.types import LibcloudError, Provider, InvalidCredsError
 from libcloud.compute.types import KeyPairDoesNotExistError
+from libcloud.compute.types import NodeState
 from libcloud.compute.providers import get_driver
 
 from libcloud.test import unittest
@@ -73,25 +75,19 @@ class CloudStackCommonTestCase(TestCaseMixin):
         size = self.driver.list_sizes()[0]
         image = self.driver.list_images()[0]
         CloudStackMockHttp.fixture_tag = 'deployfail'
-        try:
-            self.driver.create_node(name='node-name',
-                                    image=image,
-                                    size=size)
-        except:
-            return
-        self.assertTrue(False)
+        self.assertRaises(
+            Exception,
+            self.driver.create_node,
+            name='node-name', image=image, size=size)
 
     def test_create_node_delayed_failure(self):
         size = self.driver.list_sizes()[0]
         image = self.driver.list_images()[0]
         CloudStackMockHttp.fixture_tag = 'deployfail2'
-        try:
-            self.driver.create_node(name='node-name',
-                                    image=image,
-                                    size=size)
-        except:
-            return
-        self.assertTrue(False)
+        self.assertRaises(
+            Exception,
+            self.driver.create_node,
+            name='node-name', image=image, size=size)
 
     def test_create_node_default_location_success(self):
         size = self.driver.list_sizes()[0]
@@ -106,6 +102,95 @@ class CloudStackCommonTestCase(TestCaseMixin):
         self.assertEqual(node.public_ips, [])
         self.assertEqual(node.private_ips, ['192.168.1.2'])
         self.assertEqual(node.extra['zone_id'], default_location.id)
+
+    def test_create_node_ex_networks(self):
+        CloudStackMockHttp.fixture_tag = 'deploynetworks'
+        size = self.driver.list_sizes()[0]
+        image = self.driver.list_images()[0]
+        location = self.driver.list_locations()[0]
+
+        networks = [nw for nw in self.driver.ex_list_networks()
+                    if str(nw.zoneid) == str(location.id)]
+
+        node = self.driver.create_node(name='deploynetworks',
+                                       location=location,
+                                       image=image,
+                                       size=size,
+                                       networks=networks)
+        self.assertEqual(node.name, 'deploynetworks')
+        self.assertEqual(node.extra['size_id'], size.id)
+        self.assertEqual(node.extra['zone_id'], location.id)
+        self.assertEqual(node.extra['image_id'], image.id)
+        self.assertEqual(len(node.private_ips), 2)
+
+    def test_create_node_ex_ipaddress(self):
+        CloudStackMockHttp.fixture_tag = 'deployip'
+        size = self.driver.list_sizes()[0]
+        image = self.driver.list_images()[0]
+        location = self.driver.list_locations()[0]
+        ipaddress = '10.1.0.128'
+
+        networks = [nw for nw in self.driver.ex_list_networks()
+                    if str(nw.zoneid) == str(location.id)]
+
+        node = self.driver.create_node(name='deployip',
+                                       location=location,
+                                       image=image,
+                                       size=size,
+                                       networks=networks,
+                                       ex_ip_address=ipaddress)
+        self.assertEqual(node.name, 'deployip')
+        self.assertEqual(node.extra['size_id'], size.id)
+        self.assertEqual(node.extra['zone_id'], location.id)
+        self.assertEqual(node.extra['image_id'], image.id)
+        self.assertEqual(node.private_ips[0], ipaddress)
+
+    def test_create_node_ex_rootdisksize(self):
+        CloudStackMockHttp.fixture_tag = 'rootdisksize'
+        size = self.driver.list_sizes()[0]
+        image = self.driver.list_images()[0]
+        location = self.driver.list_locations()[0]
+        volumes = self.driver.list_volumes()
+        rootdisksize = '50'
+
+        networks = [nw for nw in self.driver.ex_list_networks()
+                    if str(nw.zoneid) == str(location.id)]
+
+        node = self.driver.create_node(name='rootdisksize',
+                                       location=location,
+                                       image=image,
+                                       size=size,
+                                       networks=networks,
+                                       ex_rootdisksize=rootdisksize)
+        self.assertEqual(node.name, 'rootdisksize')
+        self.assertEqual(node.extra['size_id'], size.id)
+        self.assertEqual(node.extra['zone_id'], location.id)
+        self.assertEqual(node.extra['image_id'], image.id)
+        self.assertEqual(1, len(volumes))
+        self.assertEqual('ROOT-69941', volumes[0].name)
+        self.assertEqual(53687091200, volumes[0].size)
+
+    def test_create_node_ex_start_vm_false(self):
+        CloudStackMockHttp.fixture_tag = 'stoppedvm'
+        size = self.driver.list_sizes()[0]
+        image = self.driver.list_images()[0]
+        location = self.driver.list_locations()[0]
+
+        networks = [nw for nw in self.driver.ex_list_networks()
+                    if str(nw.zoneid) == str(location.id)]
+
+        node = self.driver.create_node(name='stopped_vm',
+                                       location=location,
+                                       image=image,
+                                       size=size,
+                                       networks=networks,
+                                       ex_start_vm=False)
+        self.assertEqual(node.name, 'stopped_vm')
+        self.assertEqual(node.extra['size_id'], size.id)
+        self.assertEqual(node.extra['zone_id'], location.id)
+        self.assertEqual(node.extra['image_id'], image.id)
+
+        self.assertEqual(node.state, NodeState.STOPPED)
 
     def test_create_node_ex_security_groups(self):
         size = self.driver.list_sizes()[0]
@@ -195,6 +280,216 @@ class CloudStackCommonTestCase(TestCaseMixin):
                 network.networkofferingid,
                 fixture_networks[i]['networkofferingid'])
             self.assertEqual(network.zoneid, fixture_networks[i]['zoneid'])
+
+    def test_ex_list_network_offerings(self):
+        _, fixture = CloudStackMockHttp()._load_fixture(
+            'listNetworkOfferings_default.json')
+        fixture_networkoffers = \
+            fixture['listnetworkofferingsresponse']['networkoffering']
+
+        networkoffers = self.driver.ex_list_network_offerings()
+
+        for i, networkoffer in enumerate(networkoffers):
+            self.assertEqual(networkoffer.id, fixture_networkoffers[i]['id'])
+            self.assertEqual(networkoffer.name,
+                             fixture_networkoffers[i]['name'])
+            self.assertEqual(networkoffer.display_text,
+                             fixture_networkoffers[i]['displaytext'])
+            self.assertEqual(networkoffer.for_vpc,
+                             fixture_networkoffers[i]['forvpc'])
+            self.assertEqual(networkoffer.guest_ip_type,
+                             fixture_networkoffers[i]['guestiptype'])
+            self.assertEqual(networkoffer.service_offering_id,
+                             fixture_networkoffers[i]['serviceofferingid'])
+
+    def test_ex_create_network(self):
+        _, fixture = CloudStackMockHttp()._load_fixture(
+            'createNetwork_default.json')
+
+        fixture_network = fixture['createnetworkresponse']['network']
+
+        netoffer = self.driver.ex_list_network_offerings()[0]
+        location = self.driver.list_locations()[0]
+        network = self.driver.ex_create_network(display_text='test',
+                                                name='test',
+                                                network_offering=netoffer,
+                                                location=location,
+                                                gateway='10.1.1.1',
+                                                netmask='255.255.255.0',
+                                                network_domain='cloud.local',
+                                                vpc_id="2",
+                                                project_id="2")
+
+        self.assertEqual(network.name, fixture_network['name'])
+        self.assertEqual(network.displaytext, fixture_network['displaytext'])
+        self.assertEqual(network.id, fixture_network['id'])
+        self.assertEqual(network.extra['gateway'], fixture_network['gateway'])
+        self.assertEqual(network.extra['netmask'], fixture_network['netmask'])
+        self.assertEqual(network.networkofferingid,
+                         fixture_network['networkofferingid'])
+        self.assertEqual(network.extra['vpc_id'], fixture_network['vpcid'])
+        self.assertEqual(network.extra['project_id'],
+                         fixture_network['projectid'])
+
+    def test_ex_delete_network(self):
+
+        network = self.driver.ex_list_networks()[0]
+
+        result = self.driver.ex_delete_network(network=network)
+        self.assertTrue(result)
+
+    def test_ex_list_nics(self):
+        _, fixture = CloudStackMockHttp()._load_fixture(
+            'listNics_default.json')
+
+        fixture_nic = fixture['listnicsresponse']['nic']
+        vm = self.driver.list_nodes()[0]
+        nics = self.driver.ex_list_nics(vm)
+
+        for i, nic in enumerate(nics):
+            self.assertEqual(nic.id, fixture_nic[i]['id'])
+            self.assertEqual(nic.network_id,
+                             fixture_nic[i]['networkid'])
+            self.assertEqual(nic.net_mask,
+                             fixture_nic[i]['netmask'])
+            self.assertEqual(nic.gateway,
+                             fixture_nic[i]['gateway'])
+            self.assertEqual(nic.ip_address,
+                             fixture_nic[i]['ipaddress'])
+            self.assertEqual(nic.is_default,
+                             fixture_nic[i]['isdefault'])
+            self.assertEqual(nic.mac_address,
+                             fixture_nic[i]['macaddress'])
+
+    def test_ex_add_nic_to_node(self):
+
+        vm = self.driver.list_nodes()[0]
+        network = self.driver.ex_list_networks()[0]
+        ip = "10.1.4.123"
+
+        result = self.driver.ex_attach_nic_to_node(node=vm, network=network, ip_address=ip)
+        self.assertTrue(result)
+
+    def test_ex_remove_nic_from_node(self):
+
+        vm = self.driver.list_nodes()[0]
+        nic = self.driver.ex_list_nics(node=vm)[0]
+
+        result = self.driver.ex_detach_nic_from_node(node=vm, nic=nic)
+        self.assertTrue(result)
+
+    def test_ex_list_vpc_offerings(self):
+        _, fixture = CloudStackMockHttp()._load_fixture(
+            'listVPCOfferings_default.json')
+        fixture_vpcoffers = \
+            fixture['listvpcofferingsresponse']['vpcoffering']
+
+        vpcoffers = self.driver.ex_list_vpc_offerings()
+
+        for i, vpcoffer in enumerate(vpcoffers):
+            self.assertEqual(vpcoffer.id, fixture_vpcoffers[i]['id'])
+            self.assertEqual(vpcoffer.name,
+                             fixture_vpcoffers[i]['name'])
+            self.assertEqual(vpcoffer.display_text,
+                             fixture_vpcoffers[i]['displaytext'])
+
+    def test_ex_list_vpcs(self):
+        _, fixture = CloudStackMockHttp()._load_fixture(
+            'listVPCs_default.json')
+        fixture_vpcs = fixture['listvpcsresponse']['vpc']
+
+        vpcs = self.driver.ex_list_vpcs()
+
+        for i, vpc in enumerate(vpcs):
+            self.assertEqual(vpc.id, fixture_vpcs[i]['id'])
+            self.assertEqual(vpc.display_text, fixture_vpcs[i]['displaytext'])
+            self.assertEqual(vpc.name, fixture_vpcs[i]['name'])
+            self.assertEqual(vpc.vpc_offering_id,
+                             fixture_vpcs[i]['vpcofferingid'])
+            self.assertEqual(vpc.zone_id, fixture_vpcs[i]['zoneid'])
+
+    def test_ex_list_routers(self):
+        _, fixture = CloudStackMockHttp()._load_fixture(
+            'listRouters_default.json')
+        fixture_routers = fixture['listroutersresponse']['router']
+
+        routers = self.driver.ex_list_routers()
+
+        for i, router in enumerate(routers):
+            self.assertEqual(router.id, fixture_routers[i]['id'])
+            self.assertEqual(router.name, fixture_routers[i]['name'])
+            self.assertEqual(router.state, fixture_routers[i]['state'])
+            self.assertEqual(router.public_ip, fixture_routers[i]['publicip'])
+            self.assertEqual(router.vpc_id, fixture_routers[i]['vpcid'])
+
+    def test_ex_create_vpc(self):
+        _, fixture = CloudStackMockHttp()._load_fixture(
+            'createVPC_default.json')
+
+        fixture_vpc = fixture['createvpcresponse']
+
+        vpcoffer = self.driver.ex_list_vpc_offerings()[0]
+        vpc = self.driver.ex_create_vpc(cidr='10.1.1.0/16',
+                                        display_text='cloud.local',
+                                        name='cloud.local',
+                                        vpc_offering=vpcoffer,
+                                        zone_id="2")
+
+        self.assertEqual(vpc.id, fixture_vpc['id'])
+
+    def test_ex_delete_vpc(self):
+
+        vpc = self.driver.ex_list_vpcs()[0]
+
+        result = self.driver.ex_delete_vpc(vpc=vpc)
+        self.assertTrue(result)
+
+    def test_ex_create_network_acllist(self):
+        _, fixture = CloudStackMockHttp()._load_fixture(
+            'createNetworkACLList_default.json')
+
+        fixture_network_acllist = fixture['createnetworkacllistresponse']
+
+        vpc = self.driver.ex_list_vpcs()[0]
+        network_acllist = self.driver.ex_create_network_acllist(
+            name='test_acllist',
+            vpc_id=vpc.id,
+            description='test description')
+
+        self.assertEqual(network_acllist.id, fixture_network_acllist['id'])
+
+    def test_ex_list_network_acllist(self):
+        _, fixture = CloudStackMockHttp()._load_fixture(
+            'listNetworkACLLists_default.json')
+        fixture_acllist = \
+            fixture['listnetworkacllistsresponse']['networkacllist']
+
+        acllist = self.driver.ex_list_network_acllists()
+
+        for i, acllist in enumerate(acllist):
+            self.assertEqual(acllist.id,
+                             fixture_acllist[i]['id'])
+            self.assertEqual(acllist.name,
+                             fixture_acllist[i]['name'])
+            self.assertEqual(acllist.description,
+                             fixture_acllist[i]['description'])
+
+    def test_ex_create_network_acl(self):
+        _, fixture = CloudStackMockHttp()._load_fixture(
+            'createNetworkACL_default.json')
+
+        fixture_network_acllist = fixture['createnetworkaclresponse']
+
+        acllist = self.driver.ex_list_network_acllists()[0]
+
+        network_acl = self.driver.ex_create_network_acl(
+            protocol='test_acllist',
+            acl_id=acllist.id,
+            cidr_list='',
+            start_port='80',
+            end_port='80')
+
+        self.assertEqual(network_acl.id, fixture_network_acllist['id'])
 
     def test_ex_list_projects(self):
         _, fixture = CloudStackMockHttp()._load_fixture(
@@ -310,6 +605,11 @@ class CloudStackCommonTestCase(TestCaseMixin):
     def test_destroy_node(self):
         node = self.driver.list_nodes()[0]
         res = node.destroy()
+        self.assertTrue(res)
+
+    def test_expunge_node(self):
+        node = self.driver.list_nodes()[0]
+        res = self.driver.destroy_node(node, ex_expunge=True)
         self.assertTrue(res)
 
     def test_reboot_node(self):
@@ -431,6 +731,46 @@ class CloudStackCommonTestCase(TestCaseMixin):
                                                               '0.0.0.0/0')
         self.assertTrue(res)
 
+    def test_ex_create_affinity_group(self):
+        res = self.driver.ex_create_affinity_group('MyAG2',
+                                                   CloudStackAffinityGroupType('MyAGType'))
+        self.assertEqual(res.name, 'MyAG2')
+        self.assertIsInstance(res.type, CloudStackAffinityGroupType)
+        self.assertEqual(res.type.type, 'MyAGType')
+
+    def test_ex_create_affinity_group_already_exists(self):
+        self.assertRaises(LibcloudError,
+                          self.driver.ex_create_affinity_group,
+                          'MyAG', CloudStackAffinityGroupType('MyAGType'))
+
+    def test_delete_ex_affinity_group(self):
+        afg = self.driver.ex_create_affinity_group('MyAG3',
+                                                   CloudStackAffinityGroupType('MyAGType'))
+        res = self.driver.ex_delete_affinity_group(afg)
+        self.assertTrue(res)
+
+    def test_ex_update_node_affinity_group(self):
+        affinity_group_list = self.driver.ex_list_affinity_groups()
+        nodes = self.driver.list_nodes()
+        node = self.driver.ex_update_node_affinity_group(nodes[0],
+                                                         affinity_group_list)
+        self.assertEqual(node.extra['affinity_group'][0],
+                         affinity_group_list[0].id)
+
+    def test_ex_list_affinity_groups(self):
+        res = self.driver.ex_list_affinity_groups()
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res[0].id, '11112')
+        self.assertEqual(res[0].name, 'MyAG')
+        self.assertIsInstance(res[0].type, CloudStackAffinityGroupType)
+        self.assertEqual(res[0].type.type, 'MyAGType')
+
+    def test_ex_list_affinity_group_types(self):
+        res = self.driver.ex_list_affinity_group_types()
+        self.assertEqual(len(res), 1)
+        self.assertIsInstance(res[0], CloudStackAffinityGroupType)
+        self.assertEqual(res[0].type, 'MyAGType')
+
     def test_ex_list_public_ips(self):
         ips = self.driver.ex_list_public_ips()
         self.assertEqual(ips[0].address, '1.1.1.116')
@@ -468,6 +808,110 @@ class CloudStackCommonTestCase(TestCaseMixin):
         self.assertEqual(rule.public_end_port, public_end_port)
         self.assertEqual(rule.private_port, private_port)
         self.assertEqual(rule.private_end_port, private_end_port)
+
+    def test_ex_list_firewall_rules(self):
+        rules = self.driver.ex_list_firewall_rules()
+        self.assertEqual(len(rules), 1)
+        rule = rules[0]
+        self.assertEqual(rule.address.address, '1.1.1.116')
+        self.assertEqual(rule.protocol, 'tcp')
+        self.assertEqual(rule.cidr_list, '192.168.0.0/16')
+        self.assertIsNone(rule.icmp_code)
+        self.assertIsNone(rule.icmp_type)
+        self.assertEqual(rule.start_port, '33')
+        self.assertEqual(rule.end_port, '34')
+
+    def test_ex_list_firewall_rules_icmp(self):
+        CloudStackMockHttp.fixture_tag = 'firewallicmp'
+        rules = self.driver.ex_list_firewall_rules()
+        self.assertEqual(len(rules), 1)
+        rule = rules[0]
+        self.assertEqual(rule.address.address, '1.1.1.116')
+        self.assertEqual(rule.protocol, 'icmp')
+        self.assertEqual(rule.cidr_list, '192.168.0.0/16')
+        self.assertEqual(rule.icmp_code, 0)
+        self.assertEqual(rule.icmp_type, 8)
+        self.assertIsNone(rule.start_port)
+        self.assertIsNone(rule.end_port)
+
+    def test_ex_delete_firewall_rule(self):
+        rules = self.driver.ex_list_firewall_rules()
+        res = self.driver.ex_delete_firewall_rule(rules[0])
+        self.assertTrue(res)
+
+    def test_ex_create_firewall_rule(self):
+        address = self.driver.ex_list_public_ips()[0]
+        cidr_list = '192.168.0.0/16'
+        protocol = 'TCP'
+        start_port = 33
+        end_port = 34
+        rule = self.driver.ex_create_firewall_rule(address,
+                                                   cidr_list,
+                                                   protocol,
+                                                   start_port=start_port,
+                                                   end_port=end_port)
+        self.assertEqual(rule.address, address)
+        self.assertEqual(rule.protocol, protocol)
+        self.assertIsNone(rule.icmp_code)
+        self.assertIsNone(rule.icmp_type)
+        self.assertEqual(rule.start_port, start_port)
+        self.assertEqual(rule.end_port, end_port)
+
+    def test_ex_create_firewall_rule_icmp(self):
+        address = self.driver.ex_list_public_ips()[0]
+        cidr_list = '192.168.0.0/16'
+        protocol = 'icmp'
+        icmp_code = 0
+        icmp_type = 8
+        rule = self.driver.ex_create_firewall_rule(address,
+                                                   cidr_list,
+                                                   protocol,
+                                                   icmp_code=icmp_code,
+                                                   icmp_type=icmp_type)
+        self.assertEqual(rule.address, address)
+        self.assertEqual(rule.protocol, protocol)
+        self.assertEqual(rule.icmp_code, 0)
+        self.assertEqual(rule.icmp_type, 8)
+        self.assertIsNone(rule.start_port)
+        self.assertIsNone(rule.end_port)
+
+    def test_ex_list_egress_firewall_rules(self):
+        rules = self.driver.ex_list_egress_firewall_rules()
+        self.assertEqual(len(rules), 1)
+        rule = rules[0]
+        self.assertEqual(rule.network_id, '874be2ca-20a7-4360-80e9-7356c0018c0b')
+        self.assertEqual(rule.cidr_list, '192.168.0.0/16')
+        self.assertEqual(rule.protocol, 'tcp')
+        self.assertIsNone(rule.icmp_code)
+        self.assertIsNone(rule.icmp_type)
+        self.assertEqual(rule.start_port, '80')
+        self.assertEqual(rule.end_port, '80')
+
+    def test_ex_delete_egress_firewall_rule(self):
+        rules = self.driver.ex_list_egress_firewall_rules()
+        res = self.driver.ex_delete_egress_firewall_rule(rules[0])
+        self.assertTrue(res)
+
+    def test_ex_create_egress_firewall_rule(self):
+        network_id = '874be2ca-20a7-4360-80e9-7356c0018c0b'
+        cidr_list = '192.168.0.0/16'
+        protocol = 'TCP'
+        start_port = 33
+        end_port = 34
+        rule = self.driver.ex_create_egress_firewall_rule(
+            network_id,
+            cidr_list,
+            protocol,
+            start_port=start_port,
+            end_port=end_port)
+
+        self.assertEqual(rule.network_id, network_id)
+        self.assertEqual(rule.cidr_list, cidr_list)
+        self.assertEqual(rule.protocol, protocol)
+        self.assertIsNone(rule.icmp_code)
+        self.assertIsNone(rule.icmp_type)
+        self.assertEqual(rule.start_port, start_port)
+        self.assertEqual(rule.end_port, end_port)
 
     def test_ex_list_port_forwarding_rules(self):
         rules = self.driver.ex_list_port_forwarding_rules()
@@ -518,6 +962,16 @@ class CloudStackCommonTestCase(TestCaseMixin):
         self.assertEqual(rule.private_end_port, private_end_port)
         self.assertEqual(len(node.extra['port_forwarding_rules']), 2)
 
+    def test_ex_list_ip_forwarding_rules(self):
+        rules = self.driver.ex_list_ip_forwarding_rules()
+        self.assertEqual(len(rules), 1)
+        rule = rules[0]
+        self.assertTrue(rule.node)
+        self.assertEqual(rule.protocol, 'tcp')
+        self.assertEqual(rule.start_port, 33)
+        self.assertEqual(rule.end_port, 34)
+        self.assertEqual(rule.address.address, '1.1.1.116')
+
     def test_ex_limits(self):
         limits = self.driver.ex_limits()
         self.assertEqual(limits['max_images'], 20)
@@ -540,6 +994,135 @@ class CloudStackCommonTestCase(TestCaseMixin):
         tag_keys = ['Region']
         resp = self.driver.ex_delete_tags([node.id], 'UserVm', tag_keys)
         self.assertTrue(resp)
+
+    def test_list_snapshots(self):
+        snapshots = self.driver.list_snapshots()
+        self.assertEqual(len(snapshots), 3)
+
+        snap = snapshots[0]
+        self.assertEqual(snap.id, 188402)
+        self.assertEqual(snap.extra['name'], "i-123-87654-VM_ROOT-12344_20140917105548")
+        self.assertEqual(snap.extra['volume_id'], 89341)
+
+    def test_create_volume_snapshot(self):
+        volume = self.driver.list_volumes()[0]
+        snapshot = self.driver.create_volume_snapshot(volume)
+
+        self.assertEqual(snapshot.id, 190547)
+        self.assertEqual(snapshot.extra['name'], "i-123-87654-VM_ROOT-23456_20140917105548")
+        self.assertEqual(snapshot.extra['volume_id'], "fe1ada16-57a0-40ae-b577-01a153690fb4")
+
+    def test_destroy_volume_snapshot(self):
+        snapshot = self.driver.list_snapshots()[0]
+        resp = self.driver.destroy_volume_snapshot(snapshot)
+        self.assertTrue(resp)
+
+    def test_ex_create_snapshot_template(self):
+        snapshot = self.driver.list_snapshots()[0]
+
+        template = self.driver.ex_create_snapshot_template(snapshot, "test-libcloud-template", 99)
+
+        self.assertEqual(template.id, '10260')
+        self.assertEqual(template.name, "test-libcloud-template")
+        self.assertEqual(template.extra['displaytext'], "test-libcloud-template")
+        self.assertEqual(template.extra['hypervisor'], "VMware")
+        self.assertEqual(template.extra['os'], "Other Linux (64-bit)")
+
+    def test_ex_list_os_types(self):
+        os_types = self.driver.ex_list_os_types()
+
+        self.assertEqual(len(os_types), 146)
+
+        self.assertEqual(os_types[0]['id'], 69)
+        self.assertEqual(os_types[0]['oscategoryid'], 7)
+        self.assertEqual(os_types[0]['description'], "Asianux 3(32-bit)")
+
+    def test_ex_list_vpn_gateways(self):
+        vpn_gateways = self.driver.ex_list_vpn_gateways()
+
+        self.assertEqual(len(vpn_gateways), 1)
+
+        self.assertEqual(vpn_gateways[0].id, 'cffa0cab-d1da-42a7-92f6-41379267a29f')
+        self.assertEqual(vpn_gateways[0].account, 'some_account')
+        self.assertEqual(vpn_gateways[0].domain, 'some_domain')
+        self.assertEqual(vpn_gateways[0].domain_id, '9b397dea-25ef-4c5d-b47d-627eaebe8ed8')
+        self.assertEqual(vpn_gateways[0].public_ip, '1.2.3.4')
+        self.assertEqual(vpn_gateways[0].vpc_id, '4d25e181-8850-4d52-8ecb-a6f35bbbabde')
+
+    def test_ex_create_vpn_gateway(self):
+        vpc = self.driver.ex_list_vpcs()[0]
+
+        vpn_gateway = self.driver.ex_create_vpn_gateway(vpc)
+
+        self.assertEqual(vpn_gateway.id, '5ef6794e-cec8-4018-9fef-c4dacbadee14')
+        self.assertEqual(vpn_gateway.account, 'some_account')
+        self.assertEqual(vpn_gateway.domain, 'some_domain')
+        self.assertEqual(vpn_gateway.domain_id, '9b397dea-25ef-4c5d-b47d-627eaebe8ed8')
+        self.assertEqual(vpn_gateway.public_ip, '2.3.4.5')
+        self.assertEqual(vpn_gateway.vpc_id, vpc.id)
+
+    def test_ex_delete_vpn_gateway(self):
+        vpn_gateway = self.driver.ex_list_vpn_gateways()[0]
+        self.assertTrue(vpn_gateway.delete())
+
+    def test_ex_list_vpn_customer_gateways(self):
+        vpn_customer_gateways = self.driver.ex_list_vpn_customer_gateways()
+
+        self.assertEqual(len(vpn_customer_gateways), 1)
+
+        self.assertEqual(vpn_customer_gateways[0].id, 'ea67eaae-1c2a-4e65-b910-441e77f69bea')
+        self.assertEqual(vpn_customer_gateways[0].cidr_list, '10.2.2.0/24')
+        self.assertEqual(vpn_customer_gateways[0].esp_policy, '3des-md5')
+        self.assertEqual(vpn_customer_gateways[0].gateway, '10.2.2.1')
+        self.assertEqual(vpn_customer_gateways[0].ike_policy, '3des-md5')
+        self.assertEqual(vpn_customer_gateways[0].ipsec_psk, 'some_psk')
+
+    def test_ex_create_vpn_customer_gateway(self):
+        vpn_customer_gateway = self.driver.ex_create_vpn_customer_gateway(
+            cidr_list='10.0.0.0/24',
+            esp_policy='3des-md5',
+            gateway='10.0.0.1',
+            ike_policy='3des-md5',
+            ipsec_psk='ipsecpsk')
+
+        self.assertEqual(vpn_customer_gateway.id, 'cef3c766-116a-4e83-9844-7d08ab7d3fd4')
+        self.assertEqual(vpn_customer_gateway.esp_policy, '3des-md5')
+        self.assertEqual(vpn_customer_gateway.gateway, '10.0.0.1')
+        self.assertEqual(vpn_customer_gateway.ike_policy, '3des-md5')
+        self.assertEqual(vpn_customer_gateway.ipsec_psk, 'ipsecpsk')
+
+    def test_ex_ex_delete_vpn_customer_gateway(self):
+        vpn_customer_gateway = self.driver.ex_list_vpn_customer_gateways()[0]
+        self.assertTrue(vpn_customer_gateway.delete())
+
+    def test_ex_list_vpn_connections(self):
+        vpn_connections = self.driver.ex_list_vpn_connections()
+
+        self.assertEqual(len(vpn_connections), 1)
+
+        self.assertEqual(vpn_connections[0].id, '8f482d9a-6cee-453b-9e78-b0e1338ffce9')
+        self.assertEqual(vpn_connections[0].passive, False)
+        self.assertEqual(vpn_connections[0].vpn_customer_gateway_id, 'ea67eaae-1c2a-4e65-b910-441e77f69bea')
+        self.assertEqual(vpn_connections[0].vpn_gateway_id, 'cffa0cab-d1da-42a7-92f6-41379267a29f')
+        self.assertEqual(vpn_connections[0].state, 'Connected')
+
+    def test_ex_create_vpn_connection(self):
+        vpn_customer_gateway = self.driver.ex_list_vpn_customer_gateways()[0]
+        vpn_gateway = self.driver.ex_list_vpn_gateways()[0]
+
+        vpn_connection = self.driver.ex_create_vpn_connection(
+            vpn_customer_gateway,
+            vpn_gateway)
+
+        self.assertEqual(vpn_connection.id, 'f45c3af8-f909-4f16-9d40-ed4409c575f8')
+        self.assertEqual(vpn_connection.passive, False)
+        self.assertEqual(vpn_connection.vpn_customer_gateway_id, 'ea67eaae-1c2a-4e65-b910-441e77f69bea')
+        self.assertEqual(vpn_connection.vpn_gateway_id, 'cffa0cab-d1da-42a7-92f6-41379267a29f')
+        self.assertEqual(vpn_connection.state, 'Connected')
+
+    def test_ex_delete_vpn_connection(self):
+        vpn_connection = self.driver.ex_list_vpn_connections()[0]
+        self.assertTrue(vpn_connection.delete())
 
 
 class CloudStackTestCase(CloudStackCommonTestCase, unittest.TestCase):

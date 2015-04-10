@@ -22,6 +22,7 @@ from libcloud.compute.drivers.openstack import OpenStack_1_1_Connection,\
     OpenStack_1_1_NodeDriver
 
 from libcloud.common.rackspace import AUTH_URL
+from libcloud.utils.iso8601 import parse_date
 
 
 ENDPOINT_ARGS_MAP = {
@@ -62,8 +63,6 @@ class RackspaceFirstGenConnection(OpenStack_1_0_Connection):
         super(RackspaceFirstGenConnection, self).__init__(*args, **kwargs)
 
     def get_endpoint(self):
-        ep = {}
-
         if '2.0' in self._auth_version:
             ep = self.service_catalog.get_endpoint(service_type='compute',
                                                    name='cloudServers')
@@ -71,7 +70,7 @@ class RackspaceFirstGenConnection(OpenStack_1_0_Connection):
             raise LibcloudError(
                 'Auth version "%s" not supported' % (self._auth_version))
 
-        public_url = ep.get('publicURL', None)
+        public_url = ep.url
 
         if not public_url:
             raise LibcloudError('Could not find specified endpoint')
@@ -165,7 +164,7 @@ class RackspaceConnection(OpenStack_1_1_Connection):
             raise LibcloudError(
                 'Auth version "%s" not supported' % (self._auth_version))
 
-        public_url = ep.get('publicURL', None)
+        public_url = ep.url
 
         if not public_url:
             raise LibcloudError('Could not find specified endpoint')
@@ -217,9 +216,14 @@ class RackspaceNodeDriver(OpenStack_1_1_NodeDriver):
                  'description': api_node['displayDescription'],
                  'status': api_node['status']}
 
+        try:
+            created_td = parse_date(api_node['createdAt'])
+        except ValueError:
+            created_td = None
+
         snapshot = VolumeSnapshot(id=api_node['id'], driver=self,
                                   size=api_node['size'],
-                                  extra=extra)
+                                  extra=extra, created=created_td)
         return snapshot
 
     def _ex_connection_class_kwargs(self):

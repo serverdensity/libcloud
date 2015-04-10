@@ -2,12 +2,14 @@
 Provider                              list nodes create node reboot node destroy node list images list sizes deploy node
 ===================================== ========== =========== =========== ============ =========== ========== ===========
 `Abiquo`_                             yes        yes         yes         yes          yes         yes        no         
+`PCextreme AuroraCompute`_            yes        yes         yes         yes          yes         yes        yes        
+`Azure Virtual machines`_             yes        yes         yes         yes          yes         yes        yes        
 `Bluebox Blocks`_                     yes        yes         yes         yes          yes         yes        yes        
 `Brightbox`_                          yes        yes         no          yes          yes         yes        no         
 `CloudFrames`_                        yes        yes         yes         yes          yes         yes        no         
 `CloudSigma (API v2.0)`_              yes        yes         no          yes          yes         yes        no         
 `CloudStack`_                         yes        yes         yes         yes          yes         yes        yes        
-`Digital Ocean`_                      yes        yes         yes         yes          yes         yes        no         
+`DigitalOcean`_                       yes        yes         yes         yes          yes         yes        no         
 `Dreamhost`_                          yes        yes         yes         yes          yes         yes        no         
 `Amazon EC2`_                         yes        yes         yes         yes          yes         yes        yes        
 `Amazon EC2 (ap-northeast-1)`_        yes        yes         yes         yes          yes         yes        yes        
@@ -35,9 +37,11 @@ Provider                              list nodes create node reboot node destroy
 `Google Compute Engine`_              yes        yes         yes         yes          yes         yes        no         
 `GoGrid`_                             yes        yes         yes         yes          yes         yes        yes        
 `HostVirtual`_                        yes        yes         yes         yes          yes         yes        yes        
+`HP Public Cloud (Helion)`_           yes        yes         yes         yes          yes         yes        yes        
 `IBM SmartCloud Enterprise`_          yes        yes         yes         yes          yes         yes        no         
 `Ikoula`_                             yes        yes         yes         yes          yes         yes        yes        
 `Joyent`_                             yes        yes         yes         yes          yes         yes        yes        
+`Kili Public Cloud`_                  yes        yes         yes         yes          yes         yes        yes        
 `KTUCloud`_                           yes        yes         yes         yes          yes         yes        yes        
 `Libvirt`_                            yes        no          yes         yes          no          no         no         
 `Linode`_                             yes        yes         yes         yes          yes         yes        yes        
@@ -47,6 +51,9 @@ Provider                              list nodes create node reboot node destroy
 `OpenNebula (v3.8)`_                  yes        yes         yes         yes          yes         yes        no         
 `OpenStack`_                          yes        no          yes         yes          yes         yes        no         
 `Opsource`_                           yes        yes         yes         yes          yes         yes        yes        
+`Outscale INC`_                       yes        yes         yes         yes          yes         yes        yes        
+`Outscale SAS`_                       yes        yes         yes         yes          yes         yes        yes        
+`ProfitBricks`_                       yes        yes         yes         yes          yes         yes        no         
 `Rackspace Cloud (Next Gen)`_         yes        yes         yes         yes          yes         yes        yes        
 `Rackspace Cloud (First Gen)`_        yes        yes         yes         yes          yes         yes        yes        
 `RimuHosting`_                        yes        yes         yes         yes          yes         yes        yes        
@@ -58,15 +65,19 @@ Provider                              list nodes create node reboot node destroy
 `vCloud`_                             yes        yes         yes         yes          yes         yes        yes        
 `Voxel VoxCLOUD`_                     yes        yes         yes         yes          yes         yes        no         
 `vps.net`_                            yes        yes         yes         yes          yes         yes        no         
+`VMware vSphere`_                     yes        no          yes         yes          yes         no         no         
+`Vultr`_                              yes        yes         yes         yes          yes         yes        no         
 ===================================== ========== =========== =========== ============ =========== ========== ===========
 
 .. _`Abiquo`: http://www.abiquo.com/
+.. _`PCextreme AuroraCompute`: https://www.pcextreme.nl/aurora/
+.. _`Azure Virtual machines`: http://azure.microsoft.com/en-us/services/virtual-machines/
 .. _`Bluebox Blocks`: http://bluebox.net
 .. _`Brightbox`: http://www.brightbox.co.uk/
 .. _`CloudFrames`: http://www.cloudframes.net/
 .. _`CloudSigma (API v2.0)`: http://www.cloudsigma.com/
 .. _`CloudStack`: http://cloudstack.org/
-.. _`Digital Ocean`: https://www.digitalocean.com
+.. _`DigitalOcean`: https://www.digitalocean.com
 .. _`Dreamhost`: http://dreamhost.com/
 .. _`Amazon EC2`: http://aws.amazon.com/ec2/
 .. _`Amazon EC2 (ap-northeast-1)`: http://aws.amazon.com/ec2/
@@ -93,10 +104,12 @@ Provider                              list nodes create node reboot node destroy
 .. _`Gandi`: http://www.gandi.net/
 .. _`Google Compute Engine`: https://cloud.google.com/
 .. _`GoGrid`: http://www.gogrid.com/
-.. _`HostVirtual`: http://www.vr.org
+.. _`HostVirtual`: http://www.hostvirtual.com
+.. _`HP Public Cloud (Helion)`: http://www.hpcloud.com/
 .. _`IBM SmartCloud Enterprise`: http://ibm.com/services/us/en/cloud-enterprise/
 .. _`Ikoula`: http://express.ikoula.co.uk/cloudstack
 .. _`Joyent`: http://www.joyentcloud.com
+.. _`Kili Public Cloud`: http://kili.io/
 .. _`KTUCloud`: https://ucloudbiz.olleh.com/
 .. _`Libvirt`: http://libvirt.org/
 .. _`Linode`: http://www.linode.com/
@@ -106,6 +119,9 @@ Provider                              list nodes create node reboot node destroy
 .. _`OpenNebula (v3.8)`: http://opennebula.org/
 .. _`OpenStack`: http://openstack.org/
 .. _`Opsource`: http://www.opsource.net/
+.. _`Outscale INC`: http://www.outscale.com
+.. _`Outscale SAS`: http://www.outscale.com
+.. _`ProfitBricks`: http://www.profitbricks.com
 .. _`Rackspace Cloud (Next Gen)`: http://www.rackspace.com
 .. _`Rackspace Cloud (First Gen)`: http://www.rackspace.com
 .. _`RimuHosting`: http://rimuhosting.com/
@@ -117,3 +133,5 @@ Provider                              list nodes create node reboot node destroy
 .. _`vCloud`: http://www.vmware.com/products/vcloud/
 .. _`Voxel VoxCLOUD`: http://www.voxel.net/
 .. _`vps.net`: http://vps.net/
+.. _`VMware vSphere`: http://www.vmware.com/products/vsphere/
+.. _`Vultr`: https://www.vultr.com

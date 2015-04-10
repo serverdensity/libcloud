@@ -5,6 +5,69 @@ This page describes how to upgrade from a previous version to a new version
 which contains backward incompatible or semi-incompatible changes and how to
 preserve the old behavior when this is possible.
 
+Development
+-----------
+
+* The base signature of NodeDriver.create_volume has changed. The snapshot
+  argument is now expected to be a VolumeSnapshot instead of a string.
+  The older signature was never correct for built-in drivers, but custom
+  drivers may break. (GCE accepted strings, names or None and still does.
+  Other drivers did not implement creating volumes from snapshots at all
+  until now.)
+
+* VolumeSnapshots now have a `created` attribute that is a `datetime`
+  field showing the creation datetime of the snapshot. The field in
+  VolumeSnapshot.extra containing the original string is maintained, so
+  this is a backwards-compatible change.
+
+* The OpenStack compute driver methods ex_create_snapshot and
+  ex_delete_snapshot are now deprecated by the standard methods
+  create_volume_snapshot and destroy_volume_snapshot. You should update your
+  code.
+
+* The compute base driver now considers the name argument to
+  create_volume_snapshot to be optional. All official implementations of this
+  methods already considered it optional. You should update any custom
+  drivers if they rely on the name being mandatory.
+
+Libcloud 0.16.0
+---------------
+
+Changes in the OpenStack authentication and service catalog classes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. note::
+    If you are only working with the driver classes and have never dorectly
+    touched the classes mentioned bellow, then you aren't affected and those
+    changes are fully backward compatible.
+
+To make OpenStack authentication and identity related classes more extensible,
+easier to main and easier to use, those classes have been refactored. All of
+the changes are described bellow.
+
+* New ``libcloud.common.openstack_identity`` module has been added. This module
+  contains code for working with OpenStack Identity (Keystone) service.
+* ``OpenStackAuthConnection`` class has been removed and replaced with one
+  connection class per Keystone API version
+  (``OpenStackIdentity_1_0_Connection``, ``OpenStackIdentity_2_0_Connection``,
+  ``OpenStackIdentity_3_0_Connection``).
+* New ``get_auth_class`` method has been added to ``OpenStackBaseConnection``
+  class. This method allows you to retrieve an instance of the authentication
+  class which is used with the current connection.
+* ``OpenStackServiceCatalog`` class has been refactored to store parsed catalog
+  entries in a structured format (``OpenStackServiceCatalogEntry`` and
+  ``OpenStackServiceCatalogEntryEndpoint`` class). Previously entries were
+  stored in an unstructured form in a dictionary. All the catalog entries can
+  be retrieved by using ``OpenStackServiceCatalog.get_entris`` method.
+* ``ex_force_auth_version`` argument in ``OpenStackServiceCatalog`` constructor
+  method has been renamed to ``auth_version``
+* ``get_regions``, ``get_service_types`` and ``get_service_names`` methods on
+  the ``OpenStackServiceCatalog`` class have been modified to always return the
+  result in the same order (result values are sorted beforehand).
+
+For more information and examples, please refer to the
+`Libcloud now supports OpenStack Identity (Keystone) API v3`_ blog post.
+
 Libcloud 0.14.1
 ---------------
 
@@ -772,3 +835,5 @@ For example:
     driver = Cls('key', 'secret', api_version='1.4')
 
 For a full list of changes, please see the `CHANGES file <https://svn.apache.org/viewvc/libcloud/trunk/CHANGES?revision=1198753&view=markup>`__.
+
+.. _`Libcloud now supports OpenStack Identity (Keystone) API v3`: http://www.tomaz.me/2014/08/23/libcloud-now-supports-openstack-identity-keystone-api-v3.html

@@ -22,7 +22,8 @@ import unittest
 from libcloud.utils.py3 import httplib
 
 from libcloud.compute.drivers.linode import LinodeNodeDriver
-from libcloud.compute.base import Node, NodeAuthPassword, NodeAuthSSHKey
+from libcloud.compute.base import Node, NodeAuthPassword
+from libcloud.compute.base import NodeAuthSSHKey, StorageVolume
 
 from libcloud.test import MockHttp
 from libcloud.test.compute import TestCaseMixin
@@ -43,7 +44,7 @@ class LinodeTest(unittest.TestCase, TestCaseMixin):
         node = nodes[0]
         self.assertEqual(node.id, "8098")
         self.assertEqual(node.name, 'api-node3')
-        self.assertEqual(node.extra['PLANID'], '3')
+        self.assertEqual(node.extra['PLANID'], '2')
         self.assertTrue('75.127.96.245' in node.public_ips)
         self.assertEqual(node.private_ips, [])
 
@@ -77,7 +78,7 @@ class LinodeTest(unittest.TestCase, TestCaseMixin):
 
     def test_list_sizes(self):
         sizes = self.driver.list_sizes()
-        self.assertEqual(len(sizes), 8)
+        self.assertEqual(len(sizes), 9)
         for size in sizes:
             self.assertEqual(size.ram, int(size.name.split(" ")[1]))
 
@@ -94,6 +95,31 @@ class LinodeTest(unittest.TestCase, TestCaseMixin):
                                        image=self.driver.list_images()[0],
                                        auth=NodeAuthPassword("foobar"))
         self.assertTrue(isinstance(node, Node))
+
+    def test_destroy_volume(self):
+        # Will exception on failure
+        node = self.driver.list_nodes()[0]
+        volume = StorageVolume(id=55648, name="test", size=1024,
+                               driver=self.driver, extra={"LINODEID": node.id})
+        self.driver.destroy_volume(volume)
+
+    def test_ex_create_volume(self):
+        # should return a StorageVolume object
+        node = self.driver.list_nodes()[0]
+        volume = self.driver.ex_create_volume(size=4096,
+                                              name="Another test image",
+                                              node=node,
+                                              fs_type="ext4")
+        self.assertTrue(isinstance(volume, StorageVolume))
+
+    def test_ex_list_volumes(self):
+        # should return list of StorageVolume objects
+        node = self.driver.list_nodes()[0]
+        volumes = self.driver.ex_list_volumes(node=node)
+
+        self.assertTrue(isinstance(volumes, list))
+        self.assertTrue(isinstance(volumes[0], StorageVolume))
+        self.assertEqual(len(volumes), 2)
 
 
 class LinodeMockHttp(MockHttp):
@@ -115,8 +141,20 @@ class LinodeMockHttp(MockHttp):
         body = '{"ERRORARRAY":[],"ACTION":"linode.create","DATA":{"LinodeID":8098}}'
         return (httplib.OK, body, {}, httplib.responses[httplib.OK])
 
+    def _linode_disk_create(self, method, url, body, headers):
+        body = '{"ERRORARRAY":[],"ACTION":"linode.disk.create","DATA":{"JobID":1298,"DiskID":55647}}'
+        return (httplib.OK, body, {}, httplib.responses[httplib.OK])
+
+    def _linode_disk_delete(self, method, url, body, headers):
+        body = '{"ERRORARRAY":[],"ACTION":"linode.disk.delete","DATA":{"JobID":1298,"DiskID":55648}}'
+        return (httplib.OK, body, {}, httplib.responses[httplib.OK])
+
     def _linode_disk_createfromdistribution(self, method, url, body, headers):
         body = '{"ERRORARRAY":[],"ACTION":"linode.disk.createFromDistribution","DATA":{"JobID":1298,"DiskID":55647}}'
+        return (httplib.OK, body, {}, httplib.responses[httplib.OK])
+
+    def _linode_disk_list(self, method, url, body, headers):
+        body = self.fixtures.load('_linode_disk_list.json')
         return (httplib.OK, body, {}, httplib.responses[httplib.OK])
 
     def _linode_delete(self, method, url, body, headers):
@@ -133,10 +171,6 @@ class LinodeMockHttp(MockHttp):
 
     def _avail_kernels(self, method, url, body, headers):
         body = self.fixtures.load('_avail_kernels.json')
-        return (httplib.OK, body, {}, httplib.responses[httplib.OK])
-
-    def _linode_disk_create(self, method, url, body, headers):
-        body = '{"ERRORARRAY":[],"ACTION":"linode.disk.create","DATA":{"JobID":1299,"DiskID":55648}}'
         return (httplib.OK, body, {}, httplib.responses[httplib.OK])
 
     def _linode_boot(self, method, url, body, headers):
